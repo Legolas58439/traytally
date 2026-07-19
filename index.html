@@ -73,6 +73,9 @@
   td input.num{text-align:right;}
   .del-row{border:none;background:none;color:var(--warn);cursor:pointer;font-size:1rem;padding:2px 6px;}
   tr.clickable{cursor:pointer;}
+  tr.row-done td{opacity:.5;text-decoration:line-through;}
+  tr.row-done td:first-child{opacity:1;text-decoration:none;}
+  .collect-box{width:18px;height:18px;accent-color:var(--moss);}
   .clickable-card{cursor:pointer;}
   .clickable-card:active{background:#f7faf5;}
   tr.clickable:active{background:#f2f6ef;}
@@ -80,17 +83,14 @@
   .size-head{display:flex;align-items:baseline;gap:10px;margin-bottom:6px;flex-wrap:wrap;}
   .size-head .sz{font-size:1.15rem;font-weight:700;color:var(--moss-deep);}
   .size-head .sum{font-size:.85rem;color:var(--muted);}
-  .trays{display:flex;gap:8px;flex-wrap:wrap;}
-  .tray{display:grid;gap:2px;padding:5px;border-radius:6px;background:#3a2c22;}
-  .tray.t15{grid-template-columns:repeat(5,12px);}
-  .tray.t6{grid-template-columns:repeat(3,15px);}
-  .tray.tX{grid-template-columns:repeat(5,12px);}
-  .cell{border-radius:50%;background:#584437;width:12px;height:12px;}
-  .t6 .cell{width:15px;height:15px;}
-  .cell.full{background:var(--pot);box-shadow:inset 0 -2px 0 rgba(0,0,0,.25);}
-  .loose-pots{display:flex;gap:5px;flex-wrap:wrap;align-items:center;}
-  .pot-ind{width:20px;height:20px;border-radius:4px 4px 7px 7px;background:var(--pot);
-    box-shadow:inset 0 -3px 0 rgba(0,0,0,.22);}
+  .size-tallies{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:6px;}
+  .tally{flex:1;min-width:120px;background:linear-gradient(180deg,#f4f7f1,#e9efe4);
+    border:1px solid var(--line);border-radius:12px;padding:12px 14px;text-align:center;}
+  .tally .big{font-size:2rem;font-weight:800;color:var(--moss-deep);line-height:1;}
+  .tally .lbl{font-size:.72rem;font-weight:700;letter-spacing:.04em;color:var(--muted);
+    text-transform:uppercase;margin-top:5px;}
+  .tally .sub{font-size:.72rem;color:var(--muted);margin-top:3px;}
+  .tally.pots .big{color:var(--pot);}
   .totline{display:flex;justify-content:space-between;padding:8px 2px;border-bottom:1px dashed var(--line);font-size:.9rem;}
   .totline b{color:var(--moss-deep);}
   label.field{display:block;font-size:.78rem;font-weight:600;color:var(--muted);margin:10px 0 3px;}
@@ -115,6 +115,7 @@
   .seg button.on{background:var(--moss-deep);border-color:var(--moss-deep);color:#fff;}
   .group-head{margin:14px 0 6px;font-weight:700;color:var(--moss-deep);font-size:.9rem;
     display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+  .group-head.week-head{font-size:1.02rem;margin-top:20px;border-bottom:2px solid var(--line);padding-bottom:5px;}
   .modal-bg{position:fixed;inset:0;background:rgba(23,40,31,.45);z-index:40;display:none;
     align-items:flex-end;justify-content:center;}
   .modal-bg.open{display:flex;}
@@ -141,6 +142,26 @@
 </header>
 
 <main>
+  <!-- ============ CATALOG TAB ============ -->
+  <section id="tab-catalog" class="tab">
+    <div class="card">
+      <h2>Species catalog</h2>
+      <p class="muted" style="margin-bottom:8px">Builds itself from every purchase order you save. Tap a species for full details — totals on order, price, nursery location and notes. Locations saved here appear in the day plan, and vice versa.</p>
+      <input class="text" id="catSearch" placeholder="Search species…" oninput="renderCatalogPage()">
+      <div style="overflow-x:auto;margin-top:10px">
+        <table>
+          <thead><tr><th>Species</th><th>Size</th><th>Location</th><th style="text-align:right">Stock</th></tr></thead>
+          <tbody id="catBody"></tbody>
+        </table>
+      </div>
+      <div class="muted" style="margin-top:8px" id="catCount"></div>
+      <div class="row" style="margin-top:12px">
+        <button class="btn small" onclick="exportSellingList()">⬇ Export Bunnings availability list</button>
+      </div>
+      <p class="muted" style="margin-top:6px">Exports every species marked "Selling to Bunnings" with its stock quantity — the weekly offer list for the stores.</p>
+    </div>
+  </section>
+
   <!-- ============ ORDERS TAB ============ -->
   <section id="tab-orders" class="tab active">
     <div class="card">
@@ -189,9 +210,9 @@
       </div>
       <div class="row">
         <div style="flex:1;min-width:160px">
-          <label class="field">Delivery date (Tue / Wed / Thu)</label>
+          <label class="field">Delivery date (Mon – Fri)</label>
           <input class="text" type="date" id="rvDate" onchange="dateWarn('rvDate','rvDateWarn','rvStoreNo')">
-          <div class="warn-inline" id="rvDateWarn">⚠ Not a Tue/Wed/Thu delivery day</div>
+          <div class="warn-inline" id="rvDateWarn">⚠ Check delivery day</div>
         </div>
         <div style="flex:1;min-width:140px">
           <div class="checkbox-row" style="margin-top:26px">
@@ -218,6 +239,7 @@
     <div class="spread" style="margin-bottom:8px">
       <h2 style="margin:0">Saved orders</h2>
     </div>
+    <div class="seg" id="ordersWeekSeg"></div>
     <div class="seg" id="groupSeg">
       <button class="on" onclick="setGroupBy('none',this)">All</button>
       <button onclick="setGroupBy('store',this)">By store</button>
@@ -231,16 +253,17 @@
   <section id="tab-totals" class="tab">
     <div class="card">
       <h2>Delivery calendar</h2>
-      <div class="seg" id="dateSeg"></div>
+      <div class="seg" id="weekSeg"></div>
+      <div class="seg" id="daySeg"></div>
       <div id="totalsPicker"></div>
+    </div>
+    <div class="card">
+      <h2>Species required <span class="muted" style="font-weight:400">(tick ✓ when collected · tap a species for details)</span></h2>
+      <div style="overflow-x:auto"><div id="speciesView"><div class="empty">No orders in this scope.</div></div></div>
     </div>
     <div class="card">
       <h2>Tray &amp; pot totals</h2>
       <div id="aggView"><div class="empty">No orders in this scope.</div></div>
-    </div>
-    <div class="card">
-      <h2>Species required <span class="muted" style="font-weight:400">(tap a row for details &amp; nursery location)</span></h2>
-      <div style="overflow-x:auto"><div id="speciesView"><div class="empty">No orders in this scope.</div></div></div>
     </div>
     <div class="card">
       <h2>Freight booking form</h2>
@@ -260,10 +283,10 @@
   <section id="tab-settings" class="tab">
     <div class="card">
       <h2>Stores</h2>
-      <p class="muted" style="margin-bottom:8px">Preloaded from the Bunnings Greenlife cross-dock schedule (store number = first 4 digits of the PO). AM / PM = into-store window, FNQ = far-north Qld run, ✓ = receives but window unknown, — = no delivery that day. New orders snap their delivery date to the store's days.</p>
+      <p class="muted" style="margin-bottom:8px">Store number = first 4 digits of the PO. Tick the weekday(s) each store is delivered — local runs like Noosaville (Mon) and Maroochydore / Caloundra (Fri), cross-dock runs Tue–Thu. New orders snap their delivery date to the store's days.</p>
       <div style="overflow-x:auto">
       <table id="storeTable">
-        <thead><tr><th style="width:64px">No.</th><th>Name</th><th>Mon</th><th>Tue</th><th>Wed</th><th>Thu</th><th></th></tr></thead>
+        <thead><tr><th style="width:64px">No.</th><th>Name</th><th>Mon</th><th>Tue</th><th>Wed</th><th>Thu</th><th>Fri</th><th></th></tr></thead>
         <tbody></tbody>
       </table>
       </div>
@@ -285,16 +308,6 @@
         <button class="btn small" onclick="saveTrayRules()">Save rules</button>
       </div>
       <div class="status" id="rulesStatus"></div>
-    </div>
-    <div class="card">
-      <h2>Species catalog</h2>
-      <p class="muted" style="margin-bottom:8px">Nursery locations and notes per species. Fills in automatically whenever the species appears on an order — edit here or via the species detail popup.</p>
-      <div style="overflow-x:auto">
-      <table id="catalogTable">
-        <thead><tr><th>Species</th><th style="width:150px">Location</th><th></th></tr></thead>
-        <tbody></tbody>
-      </table>
-      </div>
     </div>
     <div class="card">
       <h2>Running outside Claude</h2>
@@ -322,6 +335,7 @@
 </main>
 
 <nav>
+  <button onclick="showTab('catalog',this)">Catalog<span class="dot"></span></button>
   <button class="active" onclick="showTab('orders',this)">Orders<span class="dot"></span></button>
   <button onclick="showTab('totals',this)">Day plan &amp; export<span class="dot"></span></button>
   <button onclick="showTab('settings',this)">Settings<span class="dot"></span></button>
@@ -339,16 +353,19 @@ let trayRules = {130:15, 200:6};
 let storeMap = {};      // {no:{name,day}}   day in Tue/Wed/Thu
 let catalog = {};       // key -> {name,location,notes}
 let pendingPages = [];  // {kind:'image'|'pdf', data, name}
+let collected = {};     // species canonKey -> true (collected in nursery)
 let reviewQueue = [];   // drafts awaiting review {meta:{...}, items:[...]}
 let reviewBatchTotal = 0;
 let reviewItems = [];
 let groupBy = 'none';
-let currentScope = 'All';   // 'All' | 'none' | 'YYYY-MM-DD'
-const DAYS = ['Tue','Wed','Thu'];
+let ordersWeek = 'all';     // 'all' | 'none' | Monday ISO of a week
+let planWeek = 'all';       // 'all' | 'none' | Monday ISO
+let planDay = 'All';        // 'All' | 'Tue' | 'Wed' | 'Thu'
+const DAYS = ['Mon','Tue','Wed','Thu','Fri'];
 const WD = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 const MONTHS = {JAN:0,FEB:1,MAR:2,APR:3,MAY:4,JUN:5,JUL:6,AUG:7,SEP:8,OCT:9,NOV:10,DEC:11};
 const MONTH_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-const ALL_DAYS = ['Mon','Tue','Wed','Thu'];
+const ALL_DAYS = ['Mon','Tue','Wed','Thu','Fri'];
 
 /* Bunnings Greenlife QLD cross-dock schedule (Yatala depot) — store directory.
    Format: number: [name, "Day SLOT", ...]  SLOT = into-store window (AM/PM) or FNQ run. */
@@ -357,7 +374,7 @@ const SEED = {
  8018:["Carseldine","Mon AM","Wed PM"],
  8019:["Oxley","Mon PM","Wed PM"],
  8026:["Cannon Hill","Mon PM","Wed AM","Thu PM"],
- 8027:["Noosaville","Mon AM","Wed AM"],
+ 8027:["Noosaville","Mon"],
  8035:["Southport","Mon PM","Thu PM"],
  8041:["Gladstone","Tue FNQ"],
  8042:["Morayfield","Tue AM","Thu AM"],
@@ -366,7 +383,7 @@ const SEED = {
  8066:["Browns Plains","Tue PM","Thu AM"],
  8072:["Hervey Bay","Mon AM","Thu AM"],
  8076:["Rothwell","Tue AM","Thu AM"],
- 8079:["Caloundra","Mon AM","Wed AM"],
+ 8079:["Caloundra","Fri"],
  8085:["Victoria Point","Tue AM"],
  8101:["Capalaba","Wed PM"],
  8103:["Mt Gravatt","Wed PM"],
@@ -386,7 +403,7 @@ const SEED = {
  8171:["Bethania","Tue PM","Thu PM"],
  8172:["Burleigh Waters","Mon PM","Wed PM","Thu PM"],
  8175:["Virginia","Mon PM","Wed PM"],
- 8176:["Maroochydore","Mon AM","Wed AM"],
+ 8176:["Maroochydore","Fri"],
  8179:["Dalby","Wed AM"],
  8180:["North Lakes","Tue AM","Thu AM"],
  8181:["Bundamba","Tue PM","Thu PM"],
@@ -425,10 +442,7 @@ function seedStores(){
   for(const [no, arr] of Object.entries(SEED)){
     if(storeMap[no]) continue;               // never overwrite user edits
     const days = {};
-    for(let i=1;i<arr.length;i++){
-      const [d,slot] = arr[i].split(' ');
-      days[d] = slot||'';
-    }
+    for(let i=1;i<arr.length;i++) days[arr[i].split(' ')[0]] = '';
     storeMap[no] = {name:arr[0], days};
   }
 }
@@ -466,9 +480,6 @@ function autoDeliveryDate(deliverOn, storeNo){
   if(!base) return '';
   return snapToDays(base, eligibleDays(storeNo));
 }
-function slotOf(o){
-  return storeMap[o.store_no]?.days?.[weekdayOf(o.delivery_date)] || '';
-}
 function orderTallies(o){
   /* T = full trays across tray-ruled sizes; P = loose + individual pots */
   const bySize = {};
@@ -488,6 +499,21 @@ function fmtNice(iso){
   if(!iso) return '';
   const d = new Date(iso+'T00:00:00');
   return `${WD[d.getDay()]} ${d.getDate()} ${MONTH_SHORT[d.getMonth()]}`;
+}
+function weekStartOf(iso){ // Monday of that week
+  const d = new Date(iso+'T00:00:00');
+  d.setDate(d.getDate() - (d.getDay()+6)%7);
+  return fmtISO(d);
+}
+function weekLabel(monISO){
+  const a = new Date(monISO+'T00:00:00');
+  const b = new Date(a); b.setDate(b.getDate()+6);
+  const sameMonth = a.getMonth()===b.getMonth();
+  return `${a.getDate()}${sameMonth?'':' '+MONTH_SHORT[a.getMonth()]}–${b.getDate()} ${MONTH_SHORT[b.getMonth()]}`;
+}
+function weekBucket(o){ return o.delivery_date ? weekStartOf(o.delivery_date) : 'none'; }
+function orderWeeks(){
+  return [...new Set(orders.filter(o=>o.delivery_date).map(o=>weekStartOf(o.delivery_date)))].sort();
 }
 function storeNameOf(o){
   return o.store_name || storeMap[o.store_no]?.name || (o.store_no ? 'Store '+o.store_no : 'Unknown store');
@@ -514,7 +540,7 @@ window.addEventListener('error', e=>{
   toast('App error: ' + (e.message||'unknown'), true);
 });
 async function persist(){
-  const payload = JSON.stringify({orders, trayRules, storeMap, catalog});
+  const payload = JSON.stringify({orders, trayRules, storeMap, catalog, collected});
   try{
     await window.storage.set('traytally', payload);
   }catch(e){
@@ -542,10 +568,25 @@ async function restore(){
       if(d.trayRules) trayRules = d.trayRules;
       if(d.storeMap) storeMap = d.storeMap;
       if(d.catalog) catalog = d.catalog;
+      if(d.collected) collected = d.collected;
       /* migrate older shapes */
       for(const v of Object.values(storeMap)){
         if(v && v.day !== undefined){ v.days = v.day ? {[v.day]:''} : {}; delete v.day; }
         if(v && !v.days) v.days = {};
+        if(v && v.days) for(const k of Object.keys(v.days)) v.days[k] = ''; // drop AM/PM/FNQ slots
+      }
+      /* local runs override old cross-dock-only days */
+      if(storeMap['8027']) storeMap['8027'].days = {Mon:''};
+      if(storeMap['8176']) storeMap['8176'].days = {Fri:''};
+      if(storeMap['8079']) storeMap['8079'].days = {Fri:''};
+      /* re-key catalog to canonical species keys */
+      {
+        const newCat = {};
+        for(const [k,v] of Object.entries(catalog)){
+          const key = canonKey(v.name||k, v.size);
+          newCat[key] = Object.assign({}, newCat[key]||{}, v, {name: prettyName(v.name||k)});
+        }
+        catalog = newCat;
       }
       for(const o of orders){
         if(o.store && !o.store_name){ o.store_name = o.store; delete o.store; }
@@ -560,7 +601,7 @@ async function restore(){
   renderAllStatic();
 }
 function renderAllStatic(){
-  renderOrders(); renderTrayRules(); renderStores(); renderCatalog();
+  renderOrders(); renderTrayRules(); renderStores(); renderCatalogPage();
   renderDateSeg(); renderPicker(); renderAggregate();
 }
 
@@ -571,7 +612,7 @@ function showTab(name, btn){
   document.querySelectorAll('nav button').forEach(b=>b.classList.remove('active'));
   btn.classList.add('active');
   if(name==='totals'){ renderDateSeg(); renderPicker(); renderAggregate(); }
-  if(name==='settings'){ renderCatalog(); }
+  if(name==='catalog'){ renderCatalogPage(); }
 }
 
 /* ================= files ================= */
@@ -657,12 +698,13 @@ function removePage(i){ pendingPages.splice(i,1); renderThumbs(); }
 /* ================= extraction ================= */
 const EXTRACT_PROMPT = `This is a Bunnings purchase order for a plant nursery (a photo of one page, or a PDF that may contain several pages).
 Read it carefully and respond with ONLY minified JSON (no spaces, no markdown fences, no commentary), exactly this shape:
-{"po_number":string|null,"store":string|null,"date_created":string|null,"deliver_on":string|null,"stated_item_count":number|null,"total_value_ex_gst":number|null,"items":[{"gtin":string|null,"description":string,"size_mm":number|null,"qty":number,"unit_price":number|null}]}
+{"po_number":string|null,"store":string|null,"date_created":string|null,"deliver_on":string|null,"stated_item_count":number|null,"total_value_ex_gst":number|null,"items":[{"gtin":string|null,"item_no":string|null,"description":string,"size_mm":number|null,"qty":number,"unit_price":number|null}]}
 Rules:
 - items = EVERY visible line item (all pages if this is a PDF).
 - size_mm: parse pot size from the description, e.g. "LOMANDRA LONGIFOLIA 130MM" -> 130. Null if none shown.
 - qty is the Qty column (individual pots, UOM Each).
 - Keep descriptions verbatim in uppercase as printed.
+- item_no: the Supplier Item No. / Bunnings item number column value if present, else null.
 - store: the Bunnings store name and/or number (often near "Deliver To"/"Ship To"), else null.
 - po_number: the long order reference (e.g. 8056S108244503), else null.
 - stated_item_count: the "Items: N" footer figure if visible, else null.
@@ -709,6 +751,7 @@ async function extractOrders(){
 function normItem(it){
   return {
     gtin: it.gtin||'',
+    item_no: it.item_no||'',
     description: it.description||'',
     size_mm: it.size_mm!=null ? Number(it.size_mm) : guessSize(it.description),
     qty: Number(it.qty)||0,
@@ -747,6 +790,39 @@ async function extractPage(page){
 function guessSize(desc){
   const m = /(\d{2,3})\s*MM/i.exec(desc||'');
   return m ? Number(m[1]) : null;
+}
+/* ---- species name canonicalisation ----
+   "PLANT-ROSEMARY++200MM TUSCAN BLUE" and "ROSEMARY TUSCAN BLUE 200MM" are the
+   same plant; the latter is the preferred display format. */
+function normTokens(desc){
+  let s = String(desc||'').toUpperCase().replace(/[+\-_/,]+/g,' ').replace(/\s+/g,' ').trim();
+  let size = null;
+  s = s.replace(/(\d{2,3})\s*MM\b/, (m,d)=>{ size = Number(d); return ' '; });
+  const words = s.split(' ').filter(w=>w && w!=='PLANT' && w!=='MM');
+  return {words, size};
+}
+function prettyName(desc){
+  const {words, size} = normTokens(desc);
+  return words.join(' ') + (size ? ' '+size+'MM' : '');
+}
+function canonKey(desc, size_mm){
+  const {words, size} = normTokens(desc);
+  return [...words].sort().join('_') + '|' + (size ?? size_mm ?? '');
+}
+function updateCatalogFromItems(items){
+  const today = fmtISO(new Date());
+  for(const it of items){
+    if(!it.description) continue;
+    const k = canonKey(it.description, it.size_mm);
+    const e = catalog[k] || {};
+    e.name = prettyName(it.description);
+    e.size = it.size_mm ?? e.size ?? null;
+    if(it.gtin) e.gtin = it.gtin;
+    if(it.item_no) e.item_no = it.item_no;
+    if(it.unit_price!=null) e.last_price = it.unit_price;
+    e.last_seen = today;
+    catalog[k] = e;   // location & notes preserved
+  }
 }
 
 /* ================= review queue ================= */
@@ -803,9 +879,9 @@ function dateWarn(inputId, warnId, storeNoId){
   const no = storeNoId ? document.getElementById(storeNoId).value.trim() : '';
   const store = storeMap[no];
   let msg = '';
-  if(!DAYS.includes(wd)) msg = `⚠ ${wd} is not a delivery day (runs are Tue / Wed / Thu)`;
+  if(!DAYS.includes(wd)) msg = `⚠ ${wd} — deliveries run Mon to Fri`;
   else if(store?.days && Object.keys(store.days).length && !(wd in store.days))
-    msg = `⚠ ${store.name||('Store '+no)} doesn't receive on ${wd} (cross-dock days: ${Object.keys(store.days).join(', ')})`;
+    msg = `⚠ ${store.name||('Store '+no)} isn't delivered on ${wd} (delivery days: ${Object.keys(store.days).join(', ')})`;
   w.textContent = msg;
   w.style.display = msg ? 'block' : 'none';
 }
@@ -847,6 +923,7 @@ function saveReviewedOrder(){
   const no = document.getElementById('rvStoreNo').value.trim();
   const name = document.getElementById('rvStoreName').value.trim();
   const date = document.getElementById('rvDate').value;
+  const savedItems = reviewItems.filter(it=>it.description && it.qty>0);
   orders.push({
     id: Date.now() + Math.floor(Math.random()*1000),
     po_number: po,
@@ -855,9 +932,10 @@ function saveReviewedOrder(){
     deliver_on: document.getElementById('rvDeliver').value.trim(),
     delivery_date: date,
     allocation: document.getElementById('rvAlloc').checked,
-    items: reviewItems.filter(it=>it.description && it.qty>0),
+    items: savedItems,
     included: true
   });
+  updateCatalogFromItems(savedItems);
   /* learn the store */
   if(no){
     storeMap[no] = storeMap[no] || {name:'', days:{}};
@@ -890,7 +968,7 @@ function orderCard(o){
     <div class="spread">
       <div>
         <b>${esc(displayName(o))}</b> <span class="muted">· ${last4(o.po_number)||'—'}</span>
-        ${o.delivery_date?`<span class="pill day">${fmtNice(o.delivery_date)}${slotOf(o)?' · '+slotOf(o):''}</span>`:'<span class="pill warn">no date</span>'}
+        ${o.delivery_date?`<span class="pill day">${fmtNice(o.delivery_date)}</span>`:'<span class="pill warn">no date</span>'}
         ${o.allocation?'<span class="pill tag">Allocation</span>':''}
         <div class="muted">${o.items.length} item${o.items.length!==1?'s':''} · T = ${t.trays} · P = ${t.pots} · $${val.toFixed(2)}</div>
       </div>
@@ -900,29 +978,65 @@ function orderCard(o){
     </div>
   </div>`;
 }
-function renderOrders(){
-  const box = document.getElementById('ordersList');
-  if(orders.length===0){
-    box.innerHTML = '<div class="card empty">No orders yet. Photograph or upload POs above to get started.</div>';
-    return;
-  }
-  const sorted = [...orders].sort((a,b)=>(a.delivery_date||'9999').localeCompare(b.delivery_date||'9999') || a.id-b.id);
-  if(groupBy==='none'){ box.innerHTML = sorted.map(orderCard).join(''); return; }
+function setOrdersWeek(w, btn){
+  ordersWeek = w;
+  document.querySelectorAll('#ordersWeekSeg button').forEach(b=>b.classList.remove('on'));
+  btn.classList.add('on');
+  renderOrders();
+}
+function renderOrdersWeekSeg(){
+  const seg = document.getElementById('ordersWeekSeg');
+  const weeks = orderWeeks();
+  const hasUndated = orders.some(o=>!o.delivery_date);
+  if(ordersWeek!=='all' && ordersWeek!=='none' && !weeks.includes(ordersWeek)) ordersWeek='all';
+  let html = `<button class="${ordersWeek==='all'?'on':''}" onclick="setOrdersWeek('all',this)">All weeks</button>`;
+  html += weeks.map(w=>`<button class="${ordersWeek===w?'on':''}" onclick="setOrdersWeek('${w}',this)">Wk ${weekLabel(w)}</button>`).join('');
+  if(hasUndated) html += `<button class="${ordersWeek==='none'?'on':''}" onclick="setOrdersWeek('none',this)">No date</button>`;
+  seg.innerHTML = html;
+}
+function renderGrouped(list){
+  if(groupBy==='none') return list.map(orderCard).join('');
   const keyFn = o => groupBy==='store' ? storeNameOf(o)
               : groupBy==='date' ? (o.delivery_date ? fmtNice(o.delivery_date) : 'No delivery date')
               : (o.allocation ? 'Allocations' : 'Standard orders');
   const sortKey = o => groupBy==='date' ? (o.delivery_date||'9999') : keyFn(o);
   const groups = {};
-  for(const o of sorted){ const k=keyFn(o); (groups[k] ||= {sort:sortKey(o), list:[]}).list.push(o); }
+  for(const o of list){ const k=keyFn(o); (groups[k] ||= {sort:sortKey(o), list:[]}).list.push(o); }
   const keys = Object.keys(groups).sort((a,b)=>String(groups[a].sort).localeCompare(String(groups[b].sort)));
-  box.innerHTML = keys.map(k=>{
+  return keys.map(k=>{
     const g = groups[k].list;
     const pots = g.reduce((s,o)=>s+o.items.reduce((x,i)=>x+i.qty,0),0);
     return `<div class="group-head">${esc(k)} <span class="pill">${g.length} order(s) · ${pots} pots</span></div>`
       + g.map(orderCard).join('');
   }).join('');
 }
-function armThenRun(btn, fn){
+function renderOrders(){
+  renderOrdersWeekSeg();
+  const box = document.getElementById('ordersList');
+  if(orders.length===0){
+    box.innerHTML = '<div class="card empty">No orders yet. Photograph or upload POs above to get started.</div>';
+    return;
+  }
+  const sorted = [...orders].sort((a,b)=>(a.delivery_date||'9999').localeCompare(b.delivery_date||'9999') || a.id-b.id);
+  if(ordersWeek==='all'){
+    /* week-by-week sections, grouping applied within each week */
+    const weeks = {};
+    for(const o of sorted) (weeks[weekBucket(o)] ||= []).push(o);
+    const keys = Object.keys(weeks).sort((a,b)=>(a==='none')-(b==='none') || a.localeCompare(b));
+    box.innerHTML = keys.map(k=>{
+      const g = weeks[k];
+      const pots = g.reduce((s,o)=>s+o.items.reduce((x,i)=>x+i.qty,0),0);
+      const label = k==='none' ? 'No delivery date' : 'Week '+weekLabel(k);
+      return `<div class="group-head week-head">${label} <span class="pill">${g.length} order(s) · ${pots} pots</span></div>`
+        + renderGrouped(g);
+    }).join('');
+    return;
+  }
+  const list = sorted.filter(o=>weekBucket(o)===ordersWeek);
+  box.innerHTML = list.length ? renderGrouped(list)
+    : '<div class="card empty">No orders in this week.</div>';
+}
+function armThenRun(btn, fn, label){
   /* confirm() popups are blocked in sandboxed frames — two-tap confirm instead */
   if(!btn){ fn(); return; }
   if(btn.dataset.armed){
@@ -933,7 +1047,7 @@ function armThenRun(btn, fn){
   btn.dataset.armed = '1';
   btn.classList.add('armed');
   const orig = btn.textContent;
-  btn.textContent = 'Tap again to delete';
+  btn.textContent = label || 'Tap again to delete';
   setTimeout(()=>{ if(btn.isConnected && btn.dataset.armed){ btn.dataset.armed=''; btn.classList.remove('armed'); btn.textContent = orig; } }, 4000);
 }
 function deleteOrder(id, btn){
@@ -958,9 +1072,9 @@ function openOrderEdit(id){
       <div style="flex:2;min-width:160px"><label class="field">Store name</label>
         <input class="text" id="edName" value="${esc(o.store_name||'')}"></div>
     </div>
-    <label class="field">Delivery date (Tue / Wed / Thu)</label>
+    <label class="field">Delivery date (Mon – Fri)</label>
     <input class="text" type="date" id="edDate" value="${esc(o.delivery_date||'')}" onchange="dateWarn('edDate','edDateWarn','edNo')">
-    <div class="warn-inline" id="edDateWarn">⚠ Not a Tue/Wed/Thu delivery day</div>
+    <div class="warn-inline" id="edDateWarn">⚠ Check delivery day</div>
     <label class="field">Deliver on (from PO)</label><input class="text" id="edDeliver" value="${esc(o.deliver_on||'')}">
     <div class="checkbox-row"><input type="checkbox" id="edAlloc" ${o.allocation?'checked':''}><label for="edAlloc">Allocation</label></div>
     <h3 style="margin-top:16px">Items</h3>
@@ -1012,6 +1126,7 @@ function saveOrderEdit(id){
   o.deliver_on = document.getElementById('edDeliver').value.trim();
   o.allocation = document.getElementById('edAlloc').checked;
   o.items = editItems.filter(it=>it.description && it.qty>0);
+  updateCatalogFromItems(o.items);
   if(o.store_no){
     storeMap[o.store_no] = storeMap[o.store_no] || {name:'', days:{}};
     storeMap[o.store_no].days = storeMap[o.store_no].days || {};
@@ -1022,23 +1137,39 @@ function saveOrderEdit(id){
 
 /* ================= day plan (calendar) ================= */
 function renderDateSeg(){
-  const seg = document.getElementById('dateSeg');
-  const dates = [...new Set(orders.map(o=>o.delivery_date).filter(Boolean))].sort();
+  /* week row */
+  const wSeg = document.getElementById('weekSeg');
+  const dSeg = document.getElementById('daySeg');
+  const weeks = orderWeeks();
   const hasUndated = orders.some(o=>!o.delivery_date);
-  let html = `<button class="${currentScope==='All'?'on':''}" onclick="setScope('All',this)">All</button>`;
-  html += dates.map(d=>
-    `<button class="${currentScope===d?'on':''}" onclick="setScope('${d}',this)">${fmtNice(d)}</button>`).join('');
-  if(hasUndated) html += `<button class="${currentScope==='none'?'on':''}" onclick="setScope('none',this)">No date</button>`;
-  seg.innerHTML = html;
+  if(planWeek!=='all' && planWeek!=='none' && !weeks.includes(planWeek)) planWeek='all';
+  let html = `<button class="${planWeek==='all'?'on':''}" onclick="setPlanWeek('all',this)">All weeks</button>`;
+  html += weeks.map(w=>`<button class="${planWeek===w?'on':''}" onclick="setPlanWeek('${w}',this)">Wk ${weekLabel(w)}</button>`).join('');
+  if(hasUndated) html += `<button class="${planWeek==='none'?'on':''}" onclick="setPlanWeek('none',this)">No date</button>`;
+  wSeg.innerHTML = html;
+  /* day row: All + Tue/Wed/Thu within the selected week */
+  if(planWeek==='none'){ dSeg.innerHTML=''; return; }
+  dSeg.innerHTML = ['All',...DAYS].map(d=>
+    `<button class="${planDay===d?'on':''}" onclick="setPlanDay('${d}',this)">${d==='All'?'All days':d}</button>`).join('');
 }
-function setScope(s, btn){
-  currentScope = s;
-  document.querySelectorAll('#dateSeg button').forEach(b=>b.classList.remove('on'));
+function setPlanWeek(w, btn){
+  planWeek = w;
+  document.querySelectorAll('#weekSeg button').forEach(b=>b.classList.remove('on'));
+  btn.classList.add('on');
+  renderDateSeg(); renderPicker(); renderAggregate();
+}
+function setPlanDay(d, btn){
+  planDay = d;
+  document.querySelectorAll('#daySeg button').forEach(b=>b.classList.remove('on'));
   btn.classList.add('on');
   renderPicker(); renderAggregate();
 }
 function matchesScope(o){
-  return currentScope==='All' || (currentScope==='none' ? !o.delivery_date : o.delivery_date===currentScope);
+  if(planWeek==='none') return !o.delivery_date;
+  if(!o.delivery_date) return planWeek==='all' && planDay==='All';
+  if(planWeek!=='all' && weekStartOf(o.delivery_date)!==planWeek) return false;
+  if(planDay!=='All' && weekdayOf(o.delivery_date)!==planDay) return false;
+  return true;
 }
 function inScope(o){ return o.included && matchesScope(o); }
 function scopeOrders(){ return orders.filter(inScope); }
@@ -1052,7 +1183,7 @@ function renderPicker(){
   box.innerHTML = list.map(o=>`
     <label class="checkline">
       <input type="checkbox" ${o.included?'checked':''} onchange="toggleOrder(${o.id},this.checked)">
-      <span><b>${esc(displayName(o))}</b> <span class="muted">· ${last4(o.po_number)} · ${o.items.reduce((s,i)=>s+i.qty,0)} pots${o.delivery_date?' · '+fmtNice(o.delivery_date)+(slotOf(o)?' '+slotOf(o):''):''}${o.allocation?' · Allocation':''}</span></span>
+      <span><b>${esc(displayName(o))}</b> <span class="muted">· ${last4(o.po_number)} · ${o.items.reduce((s,i)=>s+i.qty,0)} pots${o.delivery_date?' · '+fmtNice(o.delivery_date):''}${o.allocation?' · Allocation':''}</span></span>
     </label>`).join('');
 }
 function toggleOrder(id,val){
@@ -1071,14 +1202,16 @@ function aggBySize(){
     }
   return bySize;
 }
-function speciesKey(it){ return (it.gtin && it.gtin.trim()) || (it.description.toUpperCase().trim()); }
+function speciesKey(it){ return canonKey(it.description, it.size_mm); }
 function aggBySpecies(){
   const map = {};
   for(const o of scopeOrders())
     for(const it of o.items){
       const k = speciesKey(it);
-      const e = map[k] ||= {key:k, gtin:it.gtin||'', desc:it.description, size:it.size_mm, qty:0, unit:null, total:0, pos:new Set(), stores:new Set()};
+      const e = map[k] ||= {key:k, gtin:it.gtin||'', item_no:it.item_no||'', desc:prettyName(it.description), size:it.size_mm??guessSize(it.description), qty:0, unit:null, total:0, pos:new Set(), stores:new Set()};
       e.qty += it.qty;
+      if(it.gtin) e.gtin = it.gtin;
+      if(it.item_no) e.item_no = it.item_no;
       if(it.unit_price!=null){ e.unit = it.unit_price; e.total += it.unit_price*it.qty; }
       e.pos.add(o.po_number);
       e.stores.add(storeNameOf(o));
@@ -1097,65 +1230,66 @@ function renderAggregate(){
     aggBox.innerHTML = spBox.innerHTML = '<div class="empty">No orders in this scope.</div>';
     return;
   }
-  let html=''; let totalTrays=0, totalLoose=0, totalPots=0;
+  let cards=''; let totalTrays=0, totalLoose=0, totalPots=0;
   for(const s of sortSizes(sizes)){
     const qty = agg[s]; totalPots += qty;
     const per = trayRules[s];
     if(per){
       const full=Math.floor(qty/per), loose=qty%per;
       totalTrays+=full; totalLoose+=loose;
-      html += `<div class="size-block">
-        <div class="size-head"><span class="sz">${s}mm</span>
-          <span class="sum">${qty} pots → <b>${full} tray${full!==1?'s':''}</b>${loose?` + ${loose} loose`:''} (${per}/tray)</span>
-          ${loose?'<span class="pill warn">partial tray</span>':''}
-        </div>
-        <div class="trays">${trayVisual(full,loose,per)}</div>
+      cards += `<div class="tally">
+        <div class="big">${full}</div>
+        <div class="lbl">${s}mm trays</div>
+        <div class="sub">${qty} pots @ ${per}/tray${loose?` · +${loose} loose`:''}</div>
       </div>`;
     }else{
       totalLoose += qty;
       const label = s==='unsized' ? 'No size' : s+'mm';
-      html += `<div class="size-block">
-        <div class="size-head"><span class="sz">${label}</span>
-          <span class="sum">${qty} individual pot${qty!==1?'s':''}</span></div>
-        <div class="loose-pots">${'<span class="pot-ind"></span>'.repeat(Math.min(qty,30))}${qty>30?`<span class="muted">×${qty}</span>`:''}</div>
+      cards += `<div class="tally pots">
+        <div class="big">${qty}</div>
+        <div class="lbl">${label} pots</div>
+        <div class="sub">individual pots</div>
       </div>`;
     }
   }
-  const totalVal = aggBySpecies().reduce((s,e)=>s+e.total,0);
-  html += `<div style="margin-top:10px">
-    <div class="totline"><span>Total pots</span><b>${totalPots}</b></div>
-    <div class="totline"><span>Total full trays</span><b>${totalTrays}</b></div>
-    <div class="totline"><span>Individual / loose pots</span><b>${totalLoose}</b></div>
-    <div class="totline"><span>Total value (ex GST)</span><b>$${totalVal.toFixed(2)}</b></div>
-  </div>`;
+  const html = `<div class="size-tallies">${cards}</div>
+    <div style="margin-top:6px">
+      <div class="totline"><span>Total full trays</span><b>${totalTrays}</b></div>
+      <div class="totline"><span>Individual / loose pots</span><b>${totalLoose}</b></div>
+      <div class="totline"><span>Total pots</span><b>${totalPots}</b></div>
+    </div>
+    <p class="muted" style="margin-top:8px">Trolley &amp; shelf calculations will be added here — shelves per trolley and trolleys per store/PO, accounting for plant height and spread.</p>`;
   aggBox.innerHTML = html;
 
+  renderSpeciesRequired(spBox);
+}
+function getCollected(){ return collected; }
+function toggleCollected(key, val){
+  if(val) collected[key] = true; else delete collected[key];
+  persist();
+  const tr = event.target.closest('tr');
+  if(tr) tr.classList.toggle('row-done', val);
+}
+function renderSpeciesRequired(spBox){
   const list = aggBySpecies();
   window._speciesList = list;
+  const collected = getCollected();
   spBox.innerHTML = `<table>
-    <thead><tr><th>Species</th><th>Size</th><th style="text-align:right">Qty</th><th>Pack</th><th style="text-align:right">Unit $</th><th style="text-align:right">Total $</th><th>Location</th></tr></thead>
+    <thead><tr><th style="width:26px" title="Collected in nursery">✓</th><th>Species</th><th>Size</th><th style="text-align:right">Qty</th><th>Pack</th><th style="text-align:right">Unit $</th><th>Location</th></tr></thead>
     <tbody>${list.map((e,i)=>{
       const per = trayRules[e.size];
       const pack = per ? `${Math.floor(e.qty/per)}T${e.qty%per?'+'+(e.qty%per):''}` : `${e.qty} pots`;
       const loc = catalog[e.key]?.location || '';
-      return `<tr class="clickable" onclick="openSpecies(${i})">
-        <td>${esc(e.desc)}</td><td>${e.size?e.size+'mm':'—'}</td>
-        <td style="text-align:right"><b>${e.qty}</b></td><td>${pack}</td>
+      const done = collected[e.key];
+      return `<tr class="${done?'row-done':''}">
+        <td><input type="checkbox" class="collect-box" ${done?'checked':''} onclick="event.stopPropagation();toggleCollected('${e.key.replace(/'/g,"\\\\'")}',this.checked)"></td>
+        <td class="clickable" onclick="openSpecies(${i})">${esc(e.desc)}</td>
+        <td>${e.size?e.size+'mm':'—'}</td>
+        <td style="text-align:right">${e.qty}</td><td><b>${pack}</b></td>
         <td style="text-align:right">${e.unit!=null?e.unit.toFixed(2):'—'}</td>
-        <td style="text-align:right">${e.total?e.total.toFixed(2):'—'}</td>
         <td>${esc(loc)||'<span class="muted">—</span>'}</td>
       </tr>`;
     }).join('')}</tbody></table>`;
-}
-function trayVisual(full, loose, per){
-  const cls = per===15?'t15':per===6?'t6':'tX';
-  const maxDraw = 12;
-  let out = '';
-  for(let t=0;t<Math.min(full,maxDraw);t++)
-    out += `<div class="tray ${cls}">${'<span class="cell full"></span>'.repeat(per)}</div>`;
-  if(full>maxDraw) out += `<span class="muted" style="align-self:center">+${full-maxDraw} more</span>`;
-  if(loose) out += `<div class="tray ${cls}">${'<span class="cell full"></span>'.repeat(loose)}${'<span class="cell"></span>'.repeat(Math.max(0,per-loose))}</div>`;
-  return out;
 }
 function openSpecies(i){
   const e = window._speciesList[i]; if(!e) return;
@@ -1169,8 +1303,8 @@ function openSpecies(i){
     ${per?`<div class="kv"><span>Packs as</span><b>${Math.floor(e.qty/per)} tray(s)${e.qty%per?' + '+(e.qty%per)+' loose':''} @ ${per}/tray</b></div>`:''}
     <div class="kv"><span>Unit price</span><b>${e.unit!=null?'$'+e.unit.toFixed(2):'—'}</b></div>
     <div class="kv"><span>Total value</span><b>${e.total?'$'+e.total.toFixed(2):'—'}</b></div>
+    <div class="kv"><span>Bunnings item No.</span><b>${esc(e.item_no||cat.item_no||'')||'—'}</b></div>
     <div class="kv"><span>GTIN</span><b>${esc(e.gtin)||'—'}</b></div>
-    <div class="kv"><span>On POs</span><b>${esc([...e.pos].join(', '))}</b></div>
     <div class="kv"><span>Stores</span><b>${esc([...e.stores].join(', '))||'—'}</b></div>
     <label class="field">Location in nursery</label>
     <input class="text" id="spLoc" value="${esc(cat.location||'')}" placeholder="e.g. Bay 7, north shadehouse">
@@ -1184,12 +1318,15 @@ function openSpecies(i){
 }
 function saveSpecies(i){
   const e = window._speciesList[i]; if(!e) return;
-  catalog[e.key] = {
+  catalog[e.key] = Object.assign({}, catalog[e.key], {
     name: e.desc,
+    size: e.size ?? catalog[e.key]?.size ?? null,
+    gtin: e.gtin || catalog[e.key]?.gtin || '',
+    item_no: e.item_no || catalog[e.key]?.item_no || '',
     location: document.getElementById('spLoc').value.trim(),
     notes: document.getElementById('spNotes').value.trim()
-  };
-  closeModal(); persist(); renderAggregate(); renderCatalog();
+  });
+  closeModal(); persist(); renderAggregate(); renderCatalogPage();
 }
 function openModal(){ document.getElementById('modalBg').classList.add('open'); }
 function closeModal(){ document.getElementById('modalBg').classList.remove('open'); }
@@ -1205,13 +1342,14 @@ function exportExcel(){
   const species = aggBySpecies();
   const dateStr = document.getElementById('freightDate').value || new Date().toISOString().slice(0,10);
   const notes = document.getElementById('freightNotes').value;
-  const scopeLabel = currentScope==='All' ? 'All dates' : currentScope==='none' ? 'Undated' : fmtNice(currentScope);
+  const scopeLabel = planWeek==='none' ? 'Undated'
+    : (planWeek==='all' ? 'All weeks' : 'Week '+weekLabel(planWeek)) + (planDay!=='All' ? ' — '+planDay : '');
 
   const s1 = [];
   s1.push(['FREIGHT BOOKING FORM']);
   s1.push(['Booking date', dateStr]);
   s1.push(['Delivery date', scopeLabel]);
-  s1.push(['Orders', included.map(o=>`${displayName(o)} (${last4(o.po_number)}${slotOf(o)?', '+slotOf(o):''})`).join(', ')]);
+  s1.push(['Orders', included.map(o=>`${displayName(o)} (${last4(o.po_number)})`).join(', ')]);
   s1.push(['Stores', [...new Set(included.map(storeNameOf))].join(', ')]);
   s1.push(['Cut-off','Bookings in by 3:00pm day prior · receiving 7am-2pm (Yatala)']);
   if(notes) s1.push(['Notes', notes]);
@@ -1246,10 +1384,10 @@ function exportExcel(){
   s2.push([]);
   s2.push(['TOTAL','','','','','', +grand.toFixed(2),'','']);
 
-  const s3 = [['Order','PO number','Store no','Store name','Delivery date','Window','Allocation','GTIN','Description','Size (mm)','Qty','Unit price','Line value']];
+  const s3 = [['Order','PO number','Store no','Store name','Delivery date','Allocation','GTIN','Description','Size (mm)','Qty','Unit price','Line value']];
   for(const o of included)
     for(const it of o.items)
-      s3.push([displayName(o), o.po_number, o.store_no||'', storeNameOf(o), o.delivery_date||'', slotOf(o), o.allocation?'Yes':'',
+      s3.push([displayName(o), o.po_number, o.store_no||'', storeNameOf(o), o.delivery_date||'', o.allocation?'Yes':'',
         it.gtin||'', it.description, it.size_mm??'', it.qty, it.unit_price??'',
         it.unit_price!=null? +(it.unit_price*it.qty).toFixed(2):'']);
 
@@ -1260,23 +1398,34 @@ function exportExcel(){
   XLSX.utils.book_append_sheet(wb, ws1, 'Freight Summary');
   XLSX.utils.book_append_sheet(wb, ws2, 'Species Summary');
   XLSX.utils.book_append_sheet(wb, ws3, 'Line Detail');
-  const scopeFile = currentScope==='All'?'all':currentScope==='none'?'undated':currentScope;
+  const scopeFile = (planWeek==='all'?'all':planWeek==='none'?'undated':'wk-'+planWeek) + (planDay!=='All'?'-'+planDay:'');
   XLSX.writeFile(wb, `freight-${scopeFile}.xlsx`);
   status.textContent = `Exported ${included.length} order(s): ${tTrays} trays + ${tLoose} loose pots.`;
 }
 
+function exportSellingList(){
+  const rows = Object.values(catalog).filter(c=>c.selling)
+    .sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+  if(rows.length===0){ toast('No species marked "Selling to Bunnings" yet.', true); return; }
+  const aoa = [['Species','Size (mm)','Bunnings item No.','GTIN','In stock','Unit price']];
+  for(const c of rows)
+    aoa.push([c.name||'', c.size??'', c.item_no||'', c.gtin||'', c.stock??'', c.last_price??'']);
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!cols']=[{wch:40},{wch:9},{wch:16},{wch:15},{wch:10},{wch:10}];
+  XLSX.utils.book_append_sheet(wb, ws, 'Bunnings Availability');
+  XLSX.writeFile(wb, `bunnings-availability-${fmtISO(new Date())}.xlsx`);
+  toast(`Exported ${rows.length} species.`);
+}
+
 /* ================= settings ================= */
-const SLOT_OPTS = ['-','AM','PM','FNQ','✓'];
 function storeRowHtml(no,name,days){
   days = days||{};
-  const sel = d => {
-    const cur = (d in days) ? (days[d]||'✓') : '-';
-    return `<select data-day="${d}" style="width:60px">${SLOT_OPTS.map(s=>`<option ${cur===s?'selected':''}>${s}</option>`).join('')}</select>`;
-  };
+  const chk = d => `<input type="checkbox" data-day="${d}" ${d in days?'checked':''} style="width:18px;height:18px;accent-color:var(--moss)">`;
   return `<tr>
     <td><input value="${esc(no)}" data-role="no" style="width:60px"></td>
     <td><input value="${esc(name)}" data-role="name" style="min-width:130px"></td>
-    ${ALL_DAYS.map(d=>`<td>${sel(d)}</td>`).join('')}
+    ${ALL_DAYS.map(d=>`<td style="text-align:center">${chk(d)}</td>`).join('')}
     <td><button class="del-row" onclick="this.closest('tr').remove()">✕</button></td>
   </tr>`;
 }
@@ -1295,9 +1444,7 @@ function saveStores(){
     const name = r.querySelector('[data-role=name]').value.trim();
     if(!no) return;
     const days = {};
-    r.querySelectorAll('select[data-day]').forEach(s=>{
-      if(s.value!=='-') days[s.dataset.day] = (s.value==='✓') ? '' : s.value;
-    });
+    r.querySelectorAll('input[data-day]').forEach(c=>{ if(c.checked) days[c.dataset.day] = ''; });
     map[no] = {name, days};
   });
   storeMap = map;
@@ -1342,16 +1489,103 @@ function saveTrayRules(){
   document.getElementById('rulesStatus').textContent = 'Rules saved.';
   renderAggregate();
 }
-function renderCatalog(){
-  const tb = document.querySelector('#catalogTable tbody');
-  const keys = Object.keys(catalog).sort((a,b)=>(catalog[a].name||a).localeCompare(catalog[b].name||b));
-  if(keys.length===0){ tb.innerHTML = '<tr><td colspan="3" class="muted">Nothing yet — locations you save from the species popup appear here.</td></tr>'; return; }
-  tb.innerHTML = keys.map((k,i)=>`
-    <tr>
-      <td>${esc(catalog[k].name||k)}</td>
-      <td><input value="${esc(catalog[k].location||'')}" data-catkey="${esc(k)}" onchange="catalog[this.dataset.catkey].location=this.value;persist()"></td>
-      <td><button class="del-row" data-catkey="${esc(k)}" onclick="delete catalog[this.dataset.catkey];persist();renderCatalog()">✕</button></td>
-    </tr>`).join('');
+/* ================= catalog page ================= */
+function renderCatalogPage(){
+  const body = document.getElementById('catBody');
+  if(!body) return;
+  const q = (document.getElementById('catSearch')?.value||'').toUpperCase().trim();
+  const keys = Object.keys(catalog)
+    .filter(k=>!q || (catalog[k].name||k).toUpperCase().includes(q))
+    .sort((a,b)=>(catalog[a].name||a).localeCompare(catalog[b].name||b));
+  window._catKeys = keys;
+  if(keys.length===0){
+    body.innerHTML = `<tr><td colspan="4" class="muted">${q?'No species match "'+esc(q)+'".':'Nothing yet — the catalog fills itself as you save purchase orders.'}</td></tr>`;
+    document.getElementById('catCount').textContent = '';
+    return;
+  }
+  body.innerHTML = keys.map((k,i)=>{
+    const c = catalog[k];
+    return `<tr class="clickable" onclick="openCatalogSpecies(${i})">
+      <td>${c.photo?'📷 ':''}${esc(c.name||k)}${c.selling?' <span class="pill" style="font-size:.62rem">selling</span>':''}</td>
+      <td>${c.size?c.size+'mm':'—'}</td>
+      <td>${esc(c.location||'')||'<span class="muted">—</span>'}</td>
+      <td style="text-align:right">${c.stock!=null?c.stock:'—'}</td>
+    </tr>`;
+  }).join('');
+  document.getElementById('catCount').textContent = `${keys.length} species · ${keys.filter(k=>catalog[k].selling).length} selling`;
+}
+function openCatalogSpecies(i){
+  const key = window._catKeys[i]; if(!key) return;
+  const c = catalog[key] || {};
+  const per = trayRules[c.size];
+  const box = document.getElementById('modalBox');
+  box.innerHTML = `
+    <h3>${esc(c.name||key)}</h3>
+    ${c.photo?`<img src="${c.photo}" style="width:100%;max-height:220px;object-fit:cover;border-radius:10px;margin-bottom:10px">`:''}
+    <div class="row" style="margin-bottom:4px">
+      <label class="btn small secondary" for="catPhotoInput">${c.photo?'Replace photo':'📷 Add photo'}</label>
+      ${c.photo?`<button class="btn small danger" onclick="removeCatPhoto(${i})">Remove photo</button>`:''}
+    </div>
+    <input type="file" id="catPhotoInput" accept="image/*" class="sr-input" onchange="addCatPhoto(${i}, this.files)">
+    <label class="field">Species name</label>
+    <input class="text" id="catName" value="${esc(c.name||'')}">
+    <div class="row">
+      <div style="flex:1;min-width:90px"><label class="field">Size mm</label>
+        <input class="text" id="catSize" value="${c.size??''}"></div>
+      <div style="flex:1;min-width:120px"><label class="field">Bunnings item No.</label>
+        <input class="text" id="catItem" value="${esc(c.item_no||'')}"></div>
+    </div>
+    <div class="row">
+      <div style="flex:1;min-width:120px"><label class="field">In stock (qty)</label>
+        <input class="text" id="catStock" inputmode="numeric" value="${c.stock??''}" placeholder="e.g. 120"></div>
+      <div style="flex:1;min-width:120px">
+        <div class="checkbox-row" style="margin-top:26px"><input type="checkbox" id="catSelling" ${c.selling?'checked':''}><label for="catSelling">Selling to Bunnings</label></div>
+      </div>
+    </div>
+    <label class="field">Location in nursery</label>
+    <input class="text" id="catLoc" value="${esc(c.location||'')}" placeholder="e.g. Bay 7, north shadehouse">
+    <label class="field">Key info / notes</label>
+    <textarea class="text" id="catNotes" rows="3">${esc(c.notes||'')}</textarea>
+    <div class="row" style="margin-top:14px">
+      <button class="btn" onclick="saveCatalogSpecies(${i})">Save</button>
+      <button class="btn secondary" onclick="closeModal()">Close</button>
+      <button class="btn danger" onclick="deleteCatalogSpecies(${i}, this)">Delete species</button>
+    </div>`;
+  openModal();
+}
+async function addCatPhoto(i, files){
+  const key = window._catKeys[i]; if(!key || !files || !files[0]) return;
+  try{
+    const b64 = await resizeToB64(files[0], 1000);
+    catalog[key].photo = 'data:image/jpeg;base64,'+b64;
+    persist(); openCatalogSpecies(i);
+  }catch(e){ toast('Could not add photo: '+e.message, true); }
+}
+function removeCatPhoto(i){
+  const key = window._catKeys[i]; if(!key) return;
+  delete catalog[key].photo; persist(); openCatalogSpecies(i);
+}
+function saveCatalogSpecies(i){
+  const key = window._catKeys[i]; if(!key) return;
+  const stock = document.getElementById('catStock').value.trim();
+  catalog[key] = Object.assign({}, catalog[key], {
+    name: document.getElementById('catName').value.trim() || catalog[key].name,
+    size: Number(document.getElementById('catSize').value)||null,
+    item_no: document.getElementById('catItem').value.trim(),
+    stock: stock==='' ? null : (Number(stock)||0),
+    selling: document.getElementById('catSelling').checked,
+    location: document.getElementById('catLoc').value.trim(),
+    notes: document.getElementById('catNotes').value.trim()
+  });
+  closeModal(); persist(); renderCatalogPage(); renderAggregate();
+}
+function deleteCatalogSpecies(i, btn){
+  const key = window._catKeys[i]; if(!key) return;
+  armThenRun(btn, ()=>{
+    delete catalog[key];
+    closeModal(); persist(); renderCatalogPage();
+    toast('Species removed from catalog');
+  }, 'Tap again to delete species');
 }
 
 /* ================= external API key ================= */
@@ -1373,7 +1607,7 @@ try{ document.getElementById('apiKeyBox').value = localStorage.getItem('traytall
 
 /* ================= backup ================= */
 function dumpBackup(){
-  document.getElementById('backupBox').value = JSON.stringify({orders, trayRules, storeMap, catalog});
+  document.getElementById('backupBox').value = JSON.stringify({orders, trayRules, storeMap, catalog, collected});
 }
 function loadBackup(){
   const st = document.getElementById('backupStatus');
@@ -1383,6 +1617,7 @@ function loadBackup(){
     if(d.trayRules) trayRules = d.trayRules;
     if(d.storeMap) storeMap = d.storeMap;
     if(d.catalog) catalog = d.catalog;
+    if(d.collected) collected = d.collected;
     persist(); renderAllStatic();
     st.className='status'; st.textContent='Backup loaded.';
   }catch(e){ st.className='status err'; st.textContent='Invalid JSON: '+e.message; }
