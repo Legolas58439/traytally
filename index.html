@@ -322,13 +322,22 @@
     </div>
     <div class="card">
       <h2>Backup / transfer</h2>
-      <p class="muted" style="margin-bottom:8px">Copy this JSON to back up everything, or paste a backup and load it.</p>
-      <textarea class="json" id="backupBox"></textarea>
+      <p class="muted" style="margin-bottom:8px">Your orders live in this browser only. Save a backup file before updating the app, clearing your browser, or switching devices — then restore it here.</p>
+      <div class="status" id="saveInfo"></div>
       <div class="row" style="margin-top:10px">
-        <button class="btn small secondary" onclick="dumpBackup()">Show backup JSON</button>
-        <button class="btn small" onclick="loadBackup()">Load pasted JSON</button>
-        <button class="btn small danger" onclick="clearAll(this)">Delete all orders</button>
+        <button class="btn" onclick="saveBackupFile()">⬇ Save backup file</button>
+        <label class="btn secondary" for="backupFileInput">⬆ Restore from file</label>
+        <input type="file" id="backupFileInput" accept="application/json,.json" class="sr-input" onchange="loadBackupFile(this.files);this.value=''">
       </div>
+      <details style="margin-top:12px">
+        <summary class="muted" style="cursor:pointer">Copy/paste backup instead</summary>
+        <textarea class="json" id="backupBox" style="margin-top:8px"></textarea>
+        <div class="row" style="margin-top:10px">
+          <button class="btn small secondary" onclick="dumpBackup()">Show backup JSON</button>
+          <button class="btn small" onclick="loadBackup()">Load pasted JSON</button>
+          <button class="btn small danger" onclick="clearAll(this)">Delete all orders</button>
+        </div>
+      </details>
       <div class="status" id="backupStatus"></div>
     </div>
   </section>
@@ -541,27 +550,32 @@ window.addEventListener('error', e=>{
 });
 async function persist(){
   const payload = JSON.stringify({orders, trayRules, storeMap, catalog, collected});
-  try{
-    await window.storage.set('traytally', payload);
-  }catch(e){
-    try{ localStorage.setItem('traytally', payload); }
-    catch(e2){
-      if(!storageWarned){
-        storageWarned = true;
-        toast('Storage unavailable here — changes won\'t survive a reload. Use Settings → Backup to save your data.', true);
-      }
-    }
+  let ok = false;
+  /* write to BOTH stores when available — whichever survives, the data survives */
+  try{ await window.storage.set('traytally', payload); ok = true; }catch(e){}
+  try{ localStorage.setItem('traytally', payload); ok = true; }catch(e){}
+  try{ localStorage.setItem('traytally_backup_at', new Date().toISOString()); }catch(e){}
+  if(!ok && !storageWarned){
+    storageWarned = true;
+    toast('Storage unavailable here — changes won\'t survive a reload. Use Settings → Save backup file.', true);
   }
+  updateSaveInfo();
+}
+function updateSaveInfo(){
+  const el = document.getElementById('saveInfo');
+  if(!el) return;
+  let when = '';
+  try{ when = localStorage.getItem('traytally_backup_at')||''; }catch(e){}
+  el.textContent = `${orders.length} order(s) · ${Object.keys(catalog).length} species stored in this browser`
+    + (when ? ` · last saved ${new Date(when).toLocaleString()}` : '');
 }
 async function restore(){
   try{
-    let raw = null;
-    try{
-      const r = await window.storage.get('traytally');
-      raw = r && r.value;
-    }catch(e){
-      raw = localStorage.getItem('traytally');
-    }
+    let a = null, b = null;
+    try{ const r = await window.storage.get('traytally'); a = r && r.value; }catch(e){}
+    try{ b = localStorage.getItem('traytally'); }catch(e){}
+    /* prefer whichever actually holds data (the larger payload wins a tie) */
+    const raw = (a && b) ? (a.length >= b.length ? a : b) : (a || b);
     if(raw){
       const d = JSON.parse(raw);
       if(Array.isArray(d.orders)) orders = d.orders;
@@ -601,7 +615,7 @@ async function restore(){
   renderAllStatic();
 }
 function renderAllStatic(){
-  renderOrders(); renderTrayRules(); renderStores(); renderCatalogPage();
+  renderOrders(); renderTrayRules(); renderStores(); renderCatalogPage(); updateSaveInfo();
   renderDateSeg(); renderPicker(); renderAggregate();
 }
 
@@ -1604,6 +1618,36 @@ function clearApiKey(){
   st.className='status'; st.textContent='Key removed.';
 }
 try{ document.getElementById('apiKeyBox').value = localStorage.getItem('traytally_apikey')||''; }catch(e){}
+
+function saveBackupFile(){
+  const payload = JSON.stringify({orders, trayRules, storeMap, catalog, collected}, null, 1);
+  const blob = new Blob([payload], {type:'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `traytally-backup-${fmtISO(new Date())}.json`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 5000);
+  toast('Backup file saved');
+}
+async function loadBackupFile(files){
+  const st = document.getElementById('backupStatus');
+  const f = (files||[])[0];
+  if(!f) return;
+  try{
+    const text = await f.text();
+    const d = JSON.parse(text);
+    if(Array.isArray(d.orders)) orders = d.orders;
+    if(d.trayRules) trayRules = d.trayRules;
+    if(d.storeMap) storeMap = d.storeMap;
+    if(d.catalog) catalog = d.catalog;
+    if(d.collected) collected = d.collected;
+    await persist(); renderAllStatic();
+    st.className='status'; st.textContent=`Restored ${orders.length} order(s) from ${f.name}.`;
+    toast('Backup restored');
+  }catch(e){
+    st.className='status err'; st.textContent='Could not read that backup: '+e.message;
+  }
+}
 
 /* ================= backup ================= */
 function dumpBackup(){
