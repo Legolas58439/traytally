@@ -76,6 +76,26 @@
   tr.row-done td{opacity:.5;text-decoration:line-through;}
   tr.row-done td:first-child{opacity:1;text-decoration:none;}
   .collect-box{width:18px;height:18px;accent-color:var(--moss);}
+  tr.item-scratched td{text-decoration:line-through;color:var(--muted);}
+  tr.item-scratched td input{text-decoration:line-through;color:var(--muted);}
+  .day-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:18px 0 8px;
+    font-weight:800;color:var(--moss-deep);font-size:1rem;border-bottom:2px solid var(--line);padding-bottom:5px;}
+  .day-totals{background:#eef3ea;border:1px dashed var(--line);border-radius:10px;
+    padding:9px 12px;font-size:.85rem;margin:4px 0 8px;color:var(--moss-deep);}
+  .arrow-btn{border:1px solid var(--line);background:#fff;border-radius:8px;width:32px;height:32px;
+    font-size:1rem;cursor:pointer;color:var(--moss-deep);}
+  .stat-table td .barwrap{background:#e6ece2;border-radius:5px;height:9px;margin-top:4px;overflow:hidden;}
+  .stat-table td .bar{background:var(--leaf);height:100%;border-radius:5px;}
+  #printArea{display:none;}
+  @media print{
+    body > *{display:none !important;}
+    #printArea{display:block !important;font-family:Georgia,serif;color:#000;}
+    #printArea h1{font-size:16pt;margin-bottom:2pt;}
+    #printArea .sub{font-size:9pt;color:#444;margin-bottom:10pt;}
+    #printArea table{width:100%;border-collapse:collapse;font-size:10pt;}
+    #printArea th,#printArea td{border:1px solid #999;padding:4pt 6pt;text-align:left;}
+    #printArea th{background:#eee;}
+  }
   .clickable-card{cursor:pointer;}
   .clickable-card:active{background:#f7faf5;}
   tr.clickable:active{background:#f2f6ef;}
@@ -237,29 +257,27 @@
     </div>
 
     <div class="spread" style="margin-bottom:8px">
-      <h2 style="margin:0">Saved orders</h2>
+      <h2 style="margin:0">Delivery schedule</h2>
     </div>
-    <div class="seg" id="ordersWeekSeg"></div>
-    <div class="seg" id="groupSeg">
-      <button class="on" onclick="setGroupBy('none',this)">All</button>
-      <button onclick="setGroupBy('store',this)">By store</button>
-      <button onclick="setGroupBy('date',this)">By date</button>
-      <button onclick="setGroupBy('alloc',this)">Allocations</button>
-    </div>
+    <div class="seg" id="weekSeg"></div>
+    <input class="text" id="ordersSearch" placeholder="Search store / PO…" oninput="renderOrders()" style="margin-bottom:10px">
     <div id="ordersList"></div>
   </section>
 
   <!-- ============ DAY PLAN TAB ============ -->
   <section id="tab-totals" class="tab">
     <div class="card">
-      <h2>Delivery calendar</h2>
-      <div class="seg" id="weekSeg"></div>
+      <h2>Scope</h2>
+      <p class="muted" style="margin-bottom:8px">Same week as the delivery schedule — pick a day to narrow the pick list. Order selection (checkboxes) lives on the Orders tab.</p>
+      <div class="seg" id="weekSeg2"></div>
       <div class="seg" id="daySeg"></div>
-      <div id="totalsPicker"></div>
     </div>
     <div class="card">
-      <h2>Species required <span class="muted" style="font-weight:400">(tick ✓ when collected · tap a species for details)</span></h2>
-      <div style="overflow-x:auto"><div id="speciesView"><div class="empty">No orders in this scope.</div></div></div>
+      <div class="spread">
+        <h2 style="margin:0">Species required <span class="muted" style="font-weight:400">(tick ✓ when collected)</span></h2>
+        <button class="btn small secondary" onclick="printPickList()">🖨 Print / PDF</button>
+      </div>
+      <div style="overflow-x:auto;margin-top:8px"><div id="speciesView"><div class="empty">No orders in this scope.</div></div></div>
     </div>
     <div class="card">
       <h2>Tray &amp; pot totals</h2>
@@ -276,6 +294,15 @@
         <button class="btn" onclick="exportExcel()">⬇ Export Excel booking form</button>
       </div>
       <div class="status" id="exportStatus"></div>
+    </div>
+  </section>
+
+  <!-- ============ STATS TAB ============ -->
+  <section id="tab-stats" class="tab">
+    <div class="card">
+      <h2>Statistics</h2>
+      <p class="muted" style="margin-bottom:8px">Sales and volume across all saved orders. Scratched items are excluded from totals.</p>
+      <div id="statsBody"></div>
     </div>
   </section>
 
@@ -346,7 +373,8 @@
 <nav>
   <button onclick="showTab('catalog',this)">Catalog<span class="dot"></span></button>
   <button class="active" onclick="showTab('orders',this)">Orders<span class="dot"></span></button>
-  <button onclick="showTab('totals',this)">Day plan &amp; export<span class="dot"></span></button>
+  <button onclick="showTab('totals',this)">Day plan<span class="dot"></span></button>
+  <button onclick="showTab('stats',this)">Stats<span class="dot"></span></button>
   <button onclick="showTab('settings',this)">Settings<span class="dot"></span></button>
 </nav>
 
@@ -354,6 +382,7 @@
   <div class="modal" id="modalBox"></div>
 </div>
 <div id="toast"></div>
+<div id="printArea"></div>
 
 <script>
 /* ================= state ================= */
@@ -366,10 +395,8 @@ let collected = {};     // species canonKey -> true (collected in nursery)
 let reviewQueue = [];   // drafts awaiting review {meta:{...}, items:[...]}
 let reviewBatchTotal = 0;
 let reviewItems = [];
-let groupBy = 'none';
-let ordersWeek = 'all';     // 'all' | 'none' | Monday ISO of a week
-let planWeek = 'all';       // 'all' | 'none' | Monday ISO
-let planDay = 'All';        // 'All' | 'Tue' | 'Wed' | 'Thu'
+let planWeek = '';          // Monday ISO of the active week, or 'none' (undated)
+let planDay = 'All';        // 'All' or a weekday
 const DAYS = ['Mon','Tue','Wed','Thu','Fri'];
 const WD = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 const MONTHS = {JAN:0,FEB:1,MAR:2,APR:3,MAY:4,JUN:5,JUL:6,AUG:7,SEP:8,OCT:9,NOV:10,DEC:11};
@@ -490,19 +517,42 @@ function autoDeliveryDate(deliverOn, storeNo){
   return snapToDays(base, eligibleDays(storeNo));
 }
 function orderTallies(o){
-  /* T = full trays across tray-ruled sizes; P = loose + individual pots */
-  const bySize = {};
-  for(const it of o.items){
-    const k = it.size_mm!=null ? it.size_mm : 'unsized';
-    bySize[k] = (bySize[k]||0) + it.qty;
+  /* T = full trays; P = loose + individual pots. Scratched items excluded; packaging overrides respected. */
+  const pools = {}; // sizeKey -> {tray:qty, ind:qty}
+  for(const it of activeItems(o)){
+    const s = it.size_mm!=null ? it.size_mm : 'unsized';
+    const e = pools[s] ||= {tray:0, ind:0};
+    if(perForItem(it)) e.tray += it.qty; else e.ind += it.qty;
   }
-  let trays=0, pots=0;
-  for(const [s,q] of Object.entries(bySize)){
+  let trays=0, pots=0, totalPots=0;
+  for(const [s,e] of Object.entries(pools)){
+    totalPots += e.tray + e.ind;
     const per = trayRules[s];
-    if(per){ trays += Math.floor(q/per); pots += q%per; }
-    else pots += q;
+    if(per && e.tray){ trays += Math.floor(e.tray/per); pots += e.tray%per; }
+    pots += e.ind;
   }
-  return {trays, pots};
+  return {trays, pots, totalPots};
+}
+function sizeBreakdownText(items){
+  /* e.g. "2×130mm T · 5×200mm T · 7×250mm pots" */
+  const pools = {};
+  for(const it of items.filter(i=>!i.scratched)){
+    const s = it.size_mm!=null ? it.size_mm : 'unsized';
+    const e = pools[s] ||= {tray:0, ind:0};
+    if(perForItem(it)) e.tray += it.qty; else e.ind += it.qty;
+  }
+  const parts = [];
+  for(const s of sortSizes(Object.keys(pools))){
+    const e = pools[s]; const per = trayRules[s];
+    const lbl = s==='unsized' ? '?' : s+'mm';
+    if(per && e.tray){
+      const f=Math.floor(e.tray/per), l=e.tray%per;
+      if(f) parts.push(`${f}×${lbl} T`);
+      if(l) parts.push(`${l}×${lbl} loose`);
+    }
+    if(e.ind) parts.push(`${e.ind}×${lbl} pots`);
+  }
+  return parts.join(' · ') || '—';
 }
 function fmtNice(iso){
   if(!iso) return '';
@@ -583,6 +633,7 @@ async function restore(){
       if(d.storeMap) storeMap = d.storeMap;
       if(d.catalog) catalog = d.catalog;
       if(d.collected) collected = d.collected;
+      for(const k of Object.keys(collected)) if(collected[k]===true) collected[k] = -1;
       /* migrate older shapes */
       for(const v of Object.values(storeMap)){
         if(v && v.day !== undefined){ v.days = v.day ? {[v.day]:''} : {}; delete v.day; }
@@ -616,7 +667,7 @@ async function restore(){
 }
 function renderAllStatic(){
   renderOrders(); renderTrayRules(); renderStores(); renderCatalogPage(); updateSaveInfo();
-  renderDateSeg(); renderPicker(); renderAggregate();
+  renderWeekSegs(); renderAggregate();
 }
 
 /* ================= tabs ================= */
@@ -625,7 +676,8 @@ function showTab(name, btn){
   document.getElementById('tab-'+name).classList.add('active');
   document.querySelectorAll('nav button').forEach(b=>b.classList.remove('active'));
   btn.classList.add('active');
-  if(name==='totals'){ renderDateSeg(); renderPicker(); renderAggregate(); }
+  if(name==='totals'){ renderWeekSegs(); renderAggregate(); }
+  if(name==='stats'){ renderStats(); }
   if(name==='catalog'){ renderCatalogPage(); }
 }
 
@@ -712,7 +764,7 @@ function removePage(i){ pendingPages.splice(i,1); renderThumbs(); }
 /* ================= extraction ================= */
 const EXTRACT_PROMPT = `This is a Bunnings purchase order for a plant nursery (a photo of one page, or a PDF that may contain several pages).
 Read it carefully and respond with ONLY minified JSON (no spaces, no markdown fences, no commentary), exactly this shape:
-{"po_number":string|null,"store":string|null,"date_created":string|null,"deliver_on":string|null,"stated_item_count":number|null,"total_value_ex_gst":number|null,"items":[{"gtin":string|null,"item_no":string|null,"description":string,"size_mm":number|null,"qty":number,"unit_price":number|null}]}
+{"po_number":string|null,"store":string|null,"created_by":string|null,"date_created":string|null,"deliver_on":string|null,"stated_item_count":number|null,"total_value_ex_gst":number|null,"items":[{"gtin":string|null,"item_no":string|null,"description":string,"size_mm":number|null,"qty":number,"unit_price":number|null}]}
 Rules:
 - items = EVERY visible line item (all pages if this is a PDF).
 - size_mm: parse pot size from the description, e.g. "LOMANDRA LONGIFOLIA 130MM" -> 130. Null if none shown.
@@ -720,6 +772,7 @@ Rules:
 - Keep descriptions verbatim in uppercase as printed.
 - item_no: the Supplier Item No. / Bunnings item number column value if present, else null.
 - store: the Bunnings store name and/or number (often near "Deliver To"/"Ship To"), else null.
+- created_by: the 'Created By' name on the PO if visible, else null.
 - po_number: the long order reference (e.g. 8056S108244503), else null.
 - stated_item_count: the "Items: N" footer figure if visible, else null.
 - Use null rather than guessing for unreadable values.`;
@@ -740,7 +793,7 @@ async function extractOrders(){
     let done = 0;
     for(const job of jobs){
       done++;
-      const meta = {po_number:null, store:null, deliver_on:null, date_created:null, stated_item_count:null, total_value_ex_gst:null};
+      const meta = {po_number:null, store:null, created_by:null, deliver_on:null, date_created:null, stated_item_count:null, total_value_ex_gst:null};
       const items = [];
       for(let i=0;i<job.length;i++){
         status.textContent = `Reading PO ${done} of ${jobs.length}${job.length>1?` — page ${i+1}/${job.length}`:''}…`;
@@ -823,6 +876,14 @@ function canonKey(desc, size_mm){
   const {words, size} = normTokens(desc);
   return [...words].sort().join('_') + '|' + (size ?? size_mm ?? '');
 }
+function perForKey(catKey, size){
+  /* species-level packaging override: 'individual' bypasses tray rules (e.g. Silver Plum 200mm) */
+  if(catKey && catalog[catKey]?.packaging==='individual') return null;
+  return trayRules[size] || null;
+}
+function perForItem(it){ return perForKey(canonKey(it.description, it.size_mm), it.size_mm); }
+function activeItems(o){ return o.items.filter(it=>!it.scratched); }
+function orderValue(o){ return activeItems(o).reduce((s,it)=>s+(it.unit_price!=null?it.unit_price*it.qty:0),0); }
 function updateCatalogFromItems(items){
   const today = fmtISO(new Date());
   for(const it of items){
@@ -847,6 +908,7 @@ function loadReview(){
     return;
   }
   const {meta, items} = draft;
+  window._draftMeta = meta;
   reviewItems = items;
   const po = meta.po_number||'';
   const no = first4(po);
@@ -946,8 +1008,10 @@ function saveReviewedOrder(){
     deliver_on: document.getElementById('rvDeliver').value.trim(),
     delivery_date: date,
     allocation: document.getElementById('rvAlloc').checked,
+    created_by: (window._draftMeta && window._draftMeta.created_by) || '',
     items: savedItems,
-    included: true
+    included: true,
+    seq: Date.now()
   });
   updateCatalogFromItems(savedItems);
   /* learn the store */
@@ -965,110 +1029,125 @@ function saveReviewedOrder(){
     document.getElementById('extractStatus').textContent='All POs saved.';
     reviewItems=[];
   }
-  persist(); renderOrders(); renderStores(); renderDateSeg(); renderPicker(); renderAggregate();
+  persist(); renderOrders(); renderStores(); renderWeekSegs(); renderAggregate();
 }
 
 /* ================= saved orders ================= */
-function setGroupBy(g, btn){
-  groupBy = g;
-  document.querySelectorAll('#groupSeg button').forEach(b=>b.classList.remove('on'));
-  btn.classList.add('on');
-  renderOrders();
-}
 function orderCard(o){
-  const val = o.items.reduce((s,it)=>s+(it.unit_price!=null?it.unit_price*it.qty:0),0);
+  const val = orderValue(o);
   const t = orderTallies(o);
+  const scr = o.items.filter(it=>it.scratched).length;
+  const act = o.items.length - scr;
   return `<div class="card clickable-card" onclick="openOrderEdit(${o.id})">
     <div class="spread">
-      <div>
-        <b>${esc(displayName(o))}</b> <span class="muted">· ${last4(o.po_number)||'—'}</span>
-        ${o.delivery_date?`<span class="pill day">${fmtNice(o.delivery_date)}</span>`:'<span class="pill warn">no date</span>'}
-        ${o.allocation?'<span class="pill tag">Allocation</span>':''}
-        <div class="muted">${o.items.length} item${o.items.length!==1?'s':''} · T = ${t.trays} · P = ${t.pots} · $${val.toFixed(2)}</div>
+      <div class="row" style="flex-wrap:nowrap;align-items:flex-start;flex:1;min-width:0">
+        <input type="checkbox" class="collect-box" style="margin-top:3px" ${o.included?'checked':''}
+          onclick="event.stopPropagation();toggleOrder(${o.id},this.checked)">
+        <div style="min-width:0">
+          <b>${esc(displayName(o))}</b> <span class="muted">· ${last4(o.po_number)||'—'}</span>
+          ${o.allocation?'<span class="pill tag">Allocation</span>':''}
+          ${o.delivery_date?'':'<span class="pill warn">no date</span>'}
+          <div class="muted">${act} item${act!==1?'s':''}${scr?` (+${scr} scratched)`:''} · T = ${t.trays} · P = ${t.pots} · $${val.toFixed(2)}</div>
+        </div>
       </div>
-      <div class="row">
-        <button class="btn small danger" onclick="event.stopPropagation();deleteOrder(${o.id}, this)">Delete</button>
+      <div class="row" style="flex-wrap:nowrap">
+        <button class="arrow-btn" onclick="event.stopPropagation();moveOrder(${o.id},-1)">↑</button>
+        <button class="arrow-btn" onclick="event.stopPropagation();moveOrder(${o.id},1)">↓</button>
+        <button class="btn small danger" onclick="event.stopPropagation();deleteOrder(${o.id}, this)">Del</button>
       </div>
     </div>
   </div>`;
 }
-function setOrdersWeek(w, btn){
-  ordersWeek = w;
-  document.querySelectorAll('#ordersWeekSeg button').forEach(b=>b.classList.remove('on'));
-  btn.classList.add('on');
-  renderOrders();
+function setPlanWeekShared(w, btn){
+  planWeek = w;
+  renderWeekSegs(); renderOrders(); renderAggregate();
 }
-function renderOrdersWeekSeg(){
-  const seg = document.getElementById('ordersWeekSeg');
+function weekChipHtml(targetFn){
   const weeks = orderWeeks();
   const hasUndated = orders.some(o=>!o.delivery_date);
-  if(ordersWeek!=='all' && ordersWeek!=='none' && !weeks.includes(ordersWeek)) ordersWeek='all';
-  let html = `<button class="${ordersWeek==='all'?'on':''}" onclick="setOrdersWeek('all',this)">All weeks</button>`;
-  html += weeks.map(w=>`<button class="${ordersWeek===w?'on':''}" onclick="setOrdersWeek('${w}',this)">Wk ${weekLabel(w)}</button>`).join('');
-  if(hasUndated) html += `<button class="${ordersWeek==='none'?'on':''}" onclick="setOrdersWeek('none',this)">No date</button>`;
-  seg.innerHTML = html;
+  if(planWeek!=='none' && !weeks.includes(planWeek)) planWeek = pickDefaultWeek(weeks);
+  let h = weeks.map(w=>`<button class="${planWeek===w?'on':''}" onclick="${targetFn}('${w}',this)">Wk ${weekLabel(w)}</button>`).join('');
+  if(hasUndated) h += `<button class="${planWeek==='none'?'on':''}" onclick="${targetFn}('none',this)">No date</button>`;
+  return h || '<span class="muted">No orders yet.</span>';
 }
-function renderGrouped(list){
-  if(groupBy==='none') return list.map(orderCard).join('');
-  const keyFn = o => groupBy==='store' ? storeNameOf(o)
-              : groupBy==='date' ? (o.delivery_date ? fmtNice(o.delivery_date) : 'No delivery date')
-              : (o.allocation ? 'Allocations' : 'Standard orders');
-  const sortKey = o => groupBy==='date' ? (o.delivery_date||'9999') : keyFn(o);
-  const groups = {};
-  for(const o of list){ const k=keyFn(o); (groups[k] ||= {sort:sortKey(o), list:[]}).list.push(o); }
-  const keys = Object.keys(groups).sort((a,b)=>String(groups[a].sort).localeCompare(String(groups[b].sort)));
-  return keys.map(k=>{
-    const g = groups[k].list;
-    const pots = g.reduce((s,o)=>s+o.items.reduce((x,i)=>x+i.qty,0),0);
-    return `<div class="group-head">${esc(k)} <span class="pill">${g.length} order(s) · ${pots} pots</span></div>`
-      + g.map(orderCard).join('');
-  }).join('');
+function pickDefaultWeek(weeks){
+  if(!weeks.length) return '';
+  const cur = weekStartOf(fmtISO(new Date()));
+  if(weeks.includes(cur)) return cur;
+  const future = weeks.filter(w=>w>cur);
+  return future.length ? future[0] : weeks[weeks.length-1];
+}
+function renderWeekSegs(){
+  const a = document.getElementById('weekSeg');
+  const b = document.getElementById('weekSeg2');
+  if(a) a.innerHTML = weekChipHtml('setPlanWeekShared');
+  if(b) b.innerHTML = weekChipHtml('setPlanWeekShared');
+  const d = document.getElementById('daySeg');
+  if(d) d.innerHTML = planWeek==='none' ? '' :
+    ['All',...DAYS].map(x=>`<button class="${planDay===x?'on':''}" onclick="setPlanDay('${x}',this)">${x==='All'?'All days':x}</button>`).join('');
+}
+function ordersInWeek(){
+  return orders.filter(o=> planWeek==='none' ? !o.delivery_date : (o.delivery_date && weekStartOf(o.delivery_date)===planWeek));
+}
+function dayTotalsHtml(list){
+  const inc = list.filter(o=>o.included);
+  if(!inc.length) return '<div class="day-totals">Nothing selected for this day.</div>';
+  let trays=0, pots=0, val=0;
+  const allItems = [];
+  for(const o of inc){ const t=orderTallies(o); trays+=t.trays; pots+=t.pots; val+=orderValue(o); allItems.push(...activeItems(o)); }
+  return `<div class="day-totals"><b>${inc.length}</b> selected → <b>${trays}</b> trays · <b>${pots}</b> pots · <b>$${val.toFixed(2)}</b><br><span class="muted">${sizeBreakdownText(allItems)}</span></div>`;
+}
+function selectAllDay(dateISO, val){
+  for(const o of orders) if((o.delivery_date||'')===dateISO || (dateISO==='none' && !o.delivery_date)) o.included = val;
+  persist(); renderOrders(); renderAggregate();
+}
+function moveOrder(id, dir){
+  const o = orders.find(x=>x.id===id); if(!o) return;
+  const sibs = orders.filter(x=>(x.delivery_date||'')===(o.delivery_date||''))
+    .sort((a,b)=>(a.seq??a.id)-(b.seq??b.id));
+  const i = sibs.findIndex(x=>x.id===id);
+  const j = i+dir;
+  if(j<0 || j>=sibs.length) return;
+  const a = sibs[i], b = sibs[j];
+  const as = a.seq??a.id, bs = b.seq??b.id;
+  a.seq = bs; b.seq = as;
+  persist(); renderOrders();
 }
 function renderOrders(){
-  renderOrdersWeekSeg();
+  renderWeekSegs();
   const box = document.getElementById('ordersList');
   if(orders.length===0){
     box.innerHTML = '<div class="card empty">No orders yet. Photograph or upload POs above to get started.</div>';
     return;
   }
-  const sorted = [...orders].sort((a,b)=>(a.delivery_date||'9999').localeCompare(b.delivery_date||'9999') || a.id-b.id);
-  if(ordersWeek==='all'){
-    /* week-by-week sections, grouping applied within each week */
-    const weeks = {};
-    for(const o of sorted) (weeks[weekBucket(o)] ||= []).push(o);
-    const keys = Object.keys(weeks).sort((a,b)=>(a==='none')-(b==='none') || a.localeCompare(b));
-    box.innerHTML = keys.map(k=>{
-      const g = weeks[k];
-      const pots = g.reduce((s,o)=>s+o.items.reduce((x,i)=>x+i.qty,0),0);
-      const label = k==='none' ? 'No delivery date' : 'Week '+weekLabel(k);
-      return `<div class="group-head week-head">${label} <span class="pill">${g.length} order(s) · ${pots} pots</span></div>`
-        + renderGrouped(g);
-    }).join('');
+  const q = (document.getElementById('ordersSearch')?.value||'').toUpperCase().trim();
+  let list = ordersInWeek();
+  if(q) list = list.filter(o=> (o.po_number+' '+storeNameOf(o)+' '+(o.store_no||'')).toUpperCase().includes(q));
+  if(!list.length){
+    box.innerHTML = `<div class="card empty">${q?'No orders match your search in this week.':'No orders in this week.'}</div>`;
     return;
   }
-  const list = sorted.filter(o=>weekBucket(o)===ordersWeek);
-  box.innerHTML = list.length ? renderGrouped(list)
-    : '<div class="card empty">No orders in this week.</div>';
-}
-function armThenRun(btn, fn, label){
-  /* confirm() popups are blocked in sandboxed frames — two-tap confirm instead */
-  if(!btn){ fn(); return; }
-  if(btn.dataset.armed){
-    btn.dataset.armed=''; btn.classList.remove('armed');
-    try{ fn(); }catch(e){ toast('Error: '+e.message, true); }
-    return;
-  }
-  btn.dataset.armed = '1';
-  btn.classList.add('armed');
-  const orig = btn.textContent;
-  btn.textContent = label || 'Tap again to delete';
-  setTimeout(()=>{ if(btn.isConnected && btn.dataset.armed){ btn.dataset.armed=''; btn.classList.remove('armed'); btn.textContent = orig; } }, 4000);
+  /* group by delivery date within the week */
+  const byDate = {};
+  for(const o of list) (byDate[o.delivery_date||'none'] ||= []).push(o);
+  const dates = Object.keys(byDate).sort((a,b)=>(a==='none')-(b==='none') || a.localeCompare(b));
+  box.innerHTML = dates.map(d=>{
+    const g = byDate[d].sort((a,b)=>(a.seq??a.id)-(b.seq??b.id));
+    const allSel = g.every(o=>o.included);
+    const label = d==='none' ? 'No delivery date' : fmtNice(d);
+    return `<div class="day-head">${label}
+        <span class="pill">${g.length} PO(s)</span>
+        <button class="btn small secondary" onclick="selectAllDay('${d==='none'?'none':d}', ${allSel?'false':'true'})">${allSel?'Unselect all':'Select all'}</button>
+      </div>`
+      + dayTotalsHtml(g)
+      + g.map(orderCard).join('');
+  }).join('');
 }
 function deleteOrder(id, btn){
   armThenRun(btn, ()=>{
     const before = orders.length;
     orders = orders.filter(o=>o.id!==id);
-    persist(); renderOrders(); renderDateSeg(); renderPicker(); renderAggregate();
+    persist(); renderOrders(); renderWeekSegs(); renderAggregate();
     toast(before>orders.length ? 'Order deleted' : 'Order not found — try reloading', before<=orders.length);
   });
 }
@@ -1086,6 +1165,8 @@ function openOrderEdit(id){
       <div style="flex:2;min-width:160px"><label class="field">Store name</label>
         <input class="text" id="edName" value="${esc(o.store_name||'')}"></div>
     </div>
+    <label class="field">PO created by</label>
+    <input class="text" id="edCreatedBy" value="${esc(o.created_by||'')}" placeholder="e.g. Ryhlee">
     <label class="field">Delivery date (Mon – Fri)</label>
     <input class="text" type="date" id="edDate" value="${esc(o.delivery_date||'')}" onchange="dateWarn('edDate','edDateWarn','edNo')">
     <div class="warn-inline" id="edDateWarn">⚠ Check delivery day</div>
@@ -1112,20 +1193,24 @@ function openOrderEdit(id){
 }
 function renderEditItems(){
   document.getElementById('edItemsBody').innerHTML = editItems.map((it,i)=>`
-    <tr>
+    <tr class="${it.scratched?'item-scratched':''}">
       <td><input value="${esc(it.description)}" onchange="editItems[${i}].description=this.value"></td>
       <td><input class="num" style="width:60px" value="${it.size_mm??''}" onchange="editItems[${i}].size_mm=Number(this.value)||null;renderEditSummary()"></td>
       <td><input class="num" style="width:52px" value="${it.qty}" onchange="editItems[${i}].qty=Number(this.value)||0;renderEditSummary()"></td>
       <td><input class="num" style="width:66px" value="${it.unit_price??''}" onchange="editItems[${i}].unit_price=Number(this.value)||null;renderEditSummary()"></td>
-      <td><button class="del-row" onclick="editItems.splice(${i},1);renderEditItems()">✕</button></td>
+      <td style="white-space:nowrap">
+        <button class="del-row" title="${it.scratched?'Restore item':'Scratch (short stock) — stays visible for invoicing'}"
+          onclick="editItems[${i}].scratched=!editItems[${i}].scratched;renderEditItems()">${it.scratched?'↺':'⊘'}</button>
+        <button class="del-row" title="Delete row entirely" onclick="editItems.splice(${i},1);renderEditItems()">✕</button>
+      </td>
     </tr>`).join('');
   renderEditSummary();
 }
 function renderEditSummary(){
   const t = orderTallies({items:editItems});
-  const val = editItems.reduce((s,it)=>s+(it.unit_price!=null?it.unit_price*it.qty:0),0);
+  const val = orderValue({items:editItems});
   const el = document.getElementById('edItemsSummary');
-  if(el) el.textContent = `T = ${t.trays} · P = ${t.pots} · $${val.toFixed(2)}`;
+  if(el) el.innerHTML = `T = ${t.trays} · P = ${t.pots} · $${val.toFixed(2)}<br><span class="muted">${sizeBreakdownText(editItems)}</span>`;
 }
 function addEditRow(){
   editItems.push({gtin:'',description:'',size_mm:null,qty:0,unit_price:null});
@@ -1139,80 +1224,48 @@ function saveOrderEdit(id){
   o.delivery_date = document.getElementById('edDate').value;
   o.deliver_on = document.getElementById('edDeliver').value.trim();
   o.allocation = document.getElementById('edAlloc').checked;
-  o.items = editItems.filter(it=>it.description && it.qty>0);
-  updateCatalogFromItems(o.items);
+  o.items = editItems.filter(it=>it.description && (it.qty>0 || it.scratched));
+  o.created_by = document.getElementById('edCreatedBy') ? document.getElementById('edCreatedBy').value.trim() : (o.created_by||'');
+  updateCatalogFromItems(activeItems(o));
   if(o.store_no){
     storeMap[o.store_no] = storeMap[o.store_no] || {name:'', days:{}};
     storeMap[o.store_no].days = storeMap[o.store_no].days || {};
     if(o.store_name) storeMap[o.store_no].name = o.store_name;
   }
-  closeModal(); persist(); renderOrders(); renderStores(); renderDateSeg(); renderPicker(); renderAggregate();
+  closeModal(); persist(); renderOrders(); renderStores(); renderWeekSegs(); renderAggregate();
 }
 
 /* ================= day plan (calendar) ================= */
-function renderDateSeg(){
-  /* week row */
-  const wSeg = document.getElementById('weekSeg');
-  const dSeg = document.getElementById('daySeg');
-  const weeks = orderWeeks();
-  const hasUndated = orders.some(o=>!o.delivery_date);
-  if(planWeek!=='all' && planWeek!=='none' && !weeks.includes(planWeek)) planWeek='all';
-  let html = `<button class="${planWeek==='all'?'on':''}" onclick="setPlanWeek('all',this)">All weeks</button>`;
-  html += weeks.map(w=>`<button class="${planWeek===w?'on':''}" onclick="setPlanWeek('${w}',this)">Wk ${weekLabel(w)}</button>`).join('');
-  if(hasUndated) html += `<button class="${planWeek==='none'?'on':''}" onclick="setPlanWeek('none',this)">No date</button>`;
-  wSeg.innerHTML = html;
-  /* day row: All + Tue/Wed/Thu within the selected week */
-  if(planWeek==='none'){ dSeg.innerHTML=''; return; }
-  dSeg.innerHTML = ['All',...DAYS].map(d=>
-    `<button class="${planDay===d?'on':''}" onclick="setPlanDay('${d}',this)">${d==='All'?'All days':d}</button>`).join('');
-}
-function setPlanWeek(w, btn){
-  planWeek = w;
-  document.querySelectorAll('#weekSeg button').forEach(b=>b.classList.remove('on'));
-  btn.classList.add('on');
-  renderDateSeg(); renderPicker(); renderAggregate();
-}
+function renderDateSeg(){ renderWeekSegs(); }
 function setPlanDay(d, btn){
   planDay = d;
-  document.querySelectorAll('#daySeg button').forEach(b=>b.classList.remove('on'));
-  btn.classList.add('on');
-  renderPicker(); renderAggregate();
+  renderWeekSegs(); renderAggregate();
 }
 function matchesScope(o){
   if(planWeek==='none') return !o.delivery_date;
-  if(!o.delivery_date) return planWeek==='all' && planDay==='All';
-  if(planWeek!=='all' && weekStartOf(o.delivery_date)!==planWeek) return false;
+  if(!o.delivery_date) return false;
+  if(weekStartOf(o.delivery_date)!==planWeek) return false;
   if(planDay!=='All' && weekdayOf(o.delivery_date)!==planDay) return false;
   return true;
 }
 function inScope(o){ return o.included && matchesScope(o); }
 function scopeOrders(){ return orders.filter(inScope); }
-function renderPicker(){
-  const box = document.getElementById('totalsPicker');
-  const list = orders.filter(matchesScope);
-  if(list.length===0){
-    box.innerHTML = `<div class="empty">No orders in this scope — assign delivery dates from each order's Edit button.</div>`;
-    return;
-  }
-  box.innerHTML = list.map(o=>`
-    <label class="checkline">
-      <input type="checkbox" ${o.included?'checked':''} onchange="toggleOrder(${o.id},this.checked)">
-      <span><b>${esc(displayName(o))}</b> <span class="muted">· ${last4(o.po_number)} · ${o.items.reduce((s,i)=>s+i.qty,0)} pots${o.delivery_date?' · '+fmtNice(o.delivery_date):''}${o.allocation?' · Allocation':''}</span></span>
-    </label>`).join('');
-}
+function renderPicker(){ /* merged into the Orders delivery schedule */ }
 function toggleOrder(id,val){
   const o = orders.find(o=>o.id===id);
   if(o) o.included = val;
-  persist(); renderAggregate();
+  persist(); renderOrders(); renderAggregate();
 }
 
 /* ---- aggregations ---- */
 function aggBySize(){
+  /* sizeKey -> {tray: qty poolable into trays, ind: qty always individual} */
   const bySize = {};
   for(const o of scopeOrders())
-    for(const it of o.items){
+    for(const it of activeItems(o)){
       const key = it.size_mm!=null ? it.size_mm : 'unsized';
-      bySize[key] = (bySize[key]||0) + it.qty;
+      const e = bySize[key] ||= {tray:0, ind:0};
+      if(perForItem(it)) e.tray += it.qty; else e.ind += it.qty;
     }
   return bySize;
 }
@@ -1220,7 +1273,7 @@ function speciesKey(it){ return canonKey(it.description, it.size_mm); }
 function aggBySpecies(){
   const map = {};
   for(const o of scopeOrders())
-    for(const it of o.items){
+    for(const it of activeItems(o)){
       const k = speciesKey(it);
       const e = map[k] ||= {key:k, gtin:it.gtin||'', item_no:it.item_no||'', desc:prettyName(it.description), size:it.size_mm??guessSize(it.description), qty:0, unit:null, total:0, pos:new Set(), stores:new Set()};
       e.qty += it.qty;
@@ -1246,19 +1299,20 @@ function renderAggregate(){
   }
   let cards=''; let totalTrays=0, totalLoose=0, totalPots=0;
   for(const s of sortSizes(sizes)){
-    const qty = agg[s]; totalPots += qty;
+    const pool = agg[s];
+    const qty = pool.tray + pool.ind; totalPots += qty;
     const per = trayRules[s];
-    if(per){
-      const full=Math.floor(qty/per), loose=qty%per;
-      totalTrays+=full; totalLoose+=loose;
+    const label = s==='unsized' ? 'No size' : s+'mm';
+    if(per && pool.tray){
+      const full=Math.floor(pool.tray/per), loose=pool.tray%per;
+      totalTrays+=full; totalLoose+=loose+pool.ind;
       cards += `<div class="tally">
         <div class="big">${full}</div>
-        <div class="lbl">${s}mm trays</div>
-        <div class="sub">${qty} pots @ ${per}/tray${loose?` · +${loose} loose`:''}</div>
+        <div class="lbl">${label} trays</div>
+        <div class="sub">${pool.tray} pots @ ${per}/tray${loose?` · +${loose} loose`:''}${pool.ind?` · +${pool.ind} individual`:''}</div>
       </div>`;
     }else{
       totalLoose += qty;
-      const label = s==='unsized' ? 'No size' : s+'mm';
       cards += `<div class="tally pots">
         <div class="big">${qty}</div>
         <div class="lbl">${label} pots</div>
@@ -1278,8 +1332,9 @@ function renderAggregate(){
   renderSpeciesRequired(spBox);
 }
 function getCollected(){ return collected; }
-function toggleCollected(key, val){
-  if(val) collected[key] = true; else delete collected[key];
+function toggleCollected(key, val, qty){
+  /* store qty at tick time — if a later PO raises the qty, the tick auto-clears */
+  if(val) collected[key] = qty; else delete collected[key];
   persist();
   const tr = event.target.closest('tr');
   if(tr) tr.classList.toggle('row-done', val);
@@ -1291,12 +1346,12 @@ function renderSpeciesRequired(spBox){
   spBox.innerHTML = `<table>
     <thead><tr><th style="width:26px" title="Collected in nursery">✓</th><th>Species</th><th>Size</th><th style="text-align:right">Qty</th><th>Pack</th><th style="text-align:right">Unit $</th><th>Location</th></tr></thead>
     <tbody>${list.map((e,i)=>{
-      const per = trayRules[e.size];
+      const per = perForKey(e.key, e.size);
       const pack = per ? `${Math.floor(e.qty/per)}T${e.qty%per?'+'+(e.qty%per):''}` : `${e.qty} pots`;
       const loc = catalog[e.key]?.location || '';
-      const done = collected[e.key];
+      const done = collected[e.key]===e.qty;
       return `<tr class="${done?'row-done':''}">
-        <td><input type="checkbox" class="collect-box" ${done?'checked':''} onclick="event.stopPropagation();toggleCollected('${e.key.replace(/'/g,"\\\\'")}',this.checked)"></td>
+        <td><input type="checkbox" class="collect-box" ${done?'checked':''} onclick="event.stopPropagation();toggleCollected('${e.key.replace(/'/g,"\\\\'")}',this.checked,${e.qty})"></td>
         <td class="clickable" onclick="openSpecies(${i})">${esc(e.desc)}</td>
         <td>${e.size?e.size+'mm':'—'}</td>
         <td style="text-align:right">${e.qty}</td><td><b>${pack}</b></td>
@@ -1307,7 +1362,7 @@ function renderSpeciesRequired(spBox){
 }
 function openSpecies(i){
   const e = window._speciesList[i]; if(!e) return;
-  const per = trayRules[e.size];
+  const per = perForKey(e.key, e.size);
   const cat = catalog[e.key] || {};
   const box = document.getElementById('modalBox');
   box.innerHTML = `
@@ -1388,7 +1443,7 @@ function exportExcel(){
   const s2 = [['Species','Size (mm)','Total qty','Trays','Loose','Unit price','Total value','Nursery location','Notes']];
   let grand=0;
   for(const e of species){
-    const per = trayRules[e.size];
+    const per = perForKey(e.key, e.size);
     grand += e.total;
     s2.push([e.desc, e.size??'', e.qty,
       per?Math.floor(e.qty/per):'', per?e.qty%per:e.qty,
@@ -1398,17 +1453,18 @@ function exportExcel(){
   s2.push([]);
   s2.push(['TOTAL','','','','','', +grand.toFixed(2),'','']);
 
-  const s3 = [['Order','PO number','Store no','Store name','Delivery date','Allocation','GTIN','Description','Size (mm)','Qty','Unit price','Line value']];
+  const s3 = [['Order','PO number','Created by','Store no','Store name','Delivery date','Allocation','Scratched','GTIN','Description','Size (mm)','Qty','Unit price','Line value']];
   for(const o of included)
     for(const it of o.items)
-      s3.push([displayName(o), o.po_number, o.store_no||'', storeNameOf(o), o.delivery_date||'', o.allocation?'Yes':'',
-        it.gtin||'', it.description, it.size_mm??'', it.qty, it.unit_price??'',
-        it.unit_price!=null? +(it.unit_price*it.qty).toFixed(2):'']);
+      s3.push([displayName(o), o.po_number, o.created_by||'', o.store_no||'', storeNameOf(o), o.delivery_date||'', o.allocation?'Yes':'',
+        it.scratched?'Yes':'', it.gtin||'', it.description, it.size_mm??'',
+        it.qty, it.unit_price??'',
+        (!it.scratched && it.unit_price!=null)? +(it.unit_price*it.qty).toFixed(2):'']);
 
   const wb = XLSX.utils.book_new();
   const ws1 = XLSX.utils.aoa_to_sheet(s1); ws1['!cols']=[{wch:16},{wch:48},{wch:14},{wch:11},{wch:11}];
   const ws2 = XLSX.utils.aoa_to_sheet(s2); ws2['!cols']=[{wch:40},{wch:9},{wch:9},{wch:7},{wch:7},{wch:10},{wch:11},{wch:22},{wch:30}];
-  const ws3 = XLSX.utils.aoa_to_sheet(s3); ws3['!cols']=[{wch:20},{wch:16},{wch:9},{wch:16},{wch:12},{wch:9},{wch:15},{wch:40},{wch:9},{wch:6},{wch:10},{wch:10}];
+  const ws3 = XLSX.utils.aoa_to_sheet(s3); ws3['!cols']=[{wch:20},{wch:16},{wch:12},{wch:9},{wch:16},{wch:12},{wch:9},{wch:9},{wch:15},{wch:40},{wch:9},{wch:6},{wch:10},{wch:10}];
   XLSX.utils.book_append_sheet(wb, ws1, 'Freight Summary');
   XLSX.utils.book_append_sheet(wb, ws2, 'Species Summary');
   XLSX.utils.book_append_sheet(wb, ws3, 'Line Detail');
@@ -1417,6 +1473,85 @@ function exportExcel(){
   status.textContent = `Exported ${included.length} order(s): ${tTrays} trays + ${tLoose} loose pots.`;
 }
 
+function printPickList(){
+  const list = aggBySpecies();
+  if(!list.length){ toast('Nothing in scope to print.', true); return; }
+  const scope = (planWeek==='none' ? 'Undated orders' : 'Week '+weekLabel(planWeek)) + (planDay!=='All'?' — '+planDay:'');
+  const rows = list.map(e=>{
+    const per = perForKey(e.key, e.size);
+    const pack = per ? `${Math.floor(e.qty/per)}T${e.qty%per?'+'+(e.qty%per):''}` : `${e.qty} pots`;
+    return `<tr><td style="width:24pt;text-align:center">${collected[e.key]===e.qty?'☑':'☐'}</td>
+      <td>${esc(e.desc)}</td><td>${e.size?e.size+'mm':''}</td>
+      <td style="text-align:right">${e.qty}</td><td><b>${pack}</b></td>
+      <td>${esc(catalog[e.key]?.location||'')}</td></tr>`;
+  }).join('');
+  document.getElementById('printArea').innerHTML = `
+    <h1>Pick list — ${esc(scope)}</h1>
+    <div class="sub">Plants Direct Queensland · printed ${new Date().toLocaleString()} · ${list.length} species</div>
+    <table><thead><tr><th>✓</th><th>Species</th><th>Size</th><th>Qty</th><th>Pack</th><th>Location</th></tr></thead>
+    <tbody>${rows}</tbody></table>`;
+  window.print();
+}
+function renderStats(){
+  const box = document.getElementById('statsBody');
+  if(!box) return;
+  if(orders.length===0){ box.innerHTML = '<div class="empty">No orders yet.</div>'; return; }
+  /* weekly */
+  const wk = {};
+  for(const o of orders){
+    const w = o.delivery_date ? weekStartOf(o.delivery_date) : 'none';
+    const t = orderTallies(o);
+    const e = wk[w] ||= {orders:0, trays:0, pots:0, value:0};
+    e.orders++; e.trays += t.trays; e.pots += t.totalPots; e.value += orderValue(o);
+  }
+  const weeks = Object.keys(wk).sort((a,b)=>(a==='none')-(b==='none') || b.localeCompare(a)).slice(0,12);
+  const maxV = Math.max(...weeks.map(w=>wk[w].value), 1);
+  const weekRows = weeks.map(w=>{
+    const e = wk[w];
+    return `<tr><td>${w==='none'?'No date':'Wk '+weekLabel(w)}</td>
+      <td style="text-align:right">${e.orders}</td><td style="text-align:right">${e.trays}</td>
+      <td style="text-align:right">${e.pots}</td>
+      <td style="text-align:right;min-width:110px"><b>$${e.value.toFixed(0)}</b>
+        <div class="barwrap"><div class="bar" style="width:${Math.round(100*e.value/maxV)}%"></div></div></td></tr>`;
+  }).join('');
+  /* by PO creator */
+  const cr = {};
+  for(const o of orders){
+    const k = o.created_by || 'Unknown';
+    const e = cr[k] ||= {orders:0, pots:0, value:0};
+    const t = orderTallies(o);
+    e.orders++; e.pots += t.totalPots; e.value += orderValue(o);
+  }
+  const creators = Object.keys(cr).sort((a,b)=>cr[b].value-cr[a].value);
+  const crRows = creators.map(k=>`<tr><td>${esc(k)}</td>
+    <td style="text-align:right">${cr[k].orders}</td><td style="text-align:right">${cr[k].pots}</td>
+    <td style="text-align:right"><b>$${cr[k].value.toFixed(0)}</b></td></tr>`).join('');
+  /* by store */
+  const st = {};
+  for(const o of orders){
+    const k = storeNameOf(o);
+    const e = st[k] ||= {orders:0, pots:0, value:0};
+    const t = orderTallies(o);
+    e.orders++; e.pots += t.totalPots; e.value += orderValue(o);
+  }
+  const storesTop = Object.keys(st).sort((a,b)=>st[b].value-st[a].value).slice(0,10);
+  const stRows = storesTop.map(k=>`<tr><td>${esc(k)}</td>
+    <td style="text-align:right">${st[k].orders}</td><td style="text-align:right">${st[k].pots}</td>
+    <td style="text-align:right"><b>$${st[k].value.toFixed(0)}</b></td></tr>`).join('');
+  box.innerHTML = `
+    <h3>By week</h3>
+    <div style="overflow-x:auto"><table class="stat-table">
+      <thead><tr><th>Week</th><th style="text-align:right">POs</th><th style="text-align:right">Trays</th><th style="text-align:right">Pots</th><th style="text-align:right">Value ex GST</th></tr></thead>
+      <tbody>${weekRows}</tbody></table></div>
+    <h3 style="margin-top:18px">By PO creator</h3>
+    <div style="overflow-x:auto"><table class="stat-table">
+      <thead><tr><th>Created by</th><th style="text-align:right">POs</th><th style="text-align:right">Pots</th><th style="text-align:right">Value</th></tr></thead>
+      <tbody>${crRows}</tbody></table></div>
+    <h3 style="margin-top:18px">Top stores</h3>
+    <div style="overflow-x:auto"><table class="stat-table">
+      <thead><tr><th>Store</th><th style="text-align:right">POs</th><th style="text-align:right">Pots</th><th style="text-align:right">Value</th></tr></thead>
+      <tbody>${stRows}</tbody></table></div>`;
+}
 function exportSellingList(){
   const rows = Object.values(catalog).filter(c=>c.selling)
     .sort((a,b)=>(a.name||'').localeCompare(b.name||''));
@@ -1473,7 +1608,7 @@ function saveStores(){
   }
   persist();
   document.getElementById('storeStatus').textContent = 'Stores saved.' + (assigned?` ${assigned} order(s) auto-assigned a delivery date.`:'');
-  renderOrders(); renderDateSeg(); renderPicker(); renderAggregate();
+  renderOrders(); renderWeekSegs(); renderAggregate();
 }
 function renderTrayRules(){
   const tb = document.querySelector('#trayRules tbody');
@@ -1549,6 +1684,11 @@ function openCatalogSpecies(i){
       <div style="flex:1;min-width:120px"><label class="field">Bunnings item No.</label>
         <input class="text" id="catItem" value="${esc(c.item_no||'')}"></div>
     </div>
+    <label class="field">Packaging</label>
+    <select class="text" id="catPack">
+      <option value="auto" ${(c.packaging||'auto')==='auto'?'selected':''}>Auto — follow tray rules for the size</option>
+      <option value="individual" ${c.packaging==='individual'?'selected':''}>Individual pots — never trayed (e.g. too large)</option>
+    </select>
     <div class="row">
       <div style="flex:1;min-width:120px"><label class="field">In stock (qty)</label>
         <input class="text" id="catStock" inputmode="numeric" value="${c.stock??''}" placeholder="e.g. 120"></div>
@@ -1587,6 +1727,7 @@ function saveCatalogSpecies(i){
     size: Number(document.getElementById('catSize').value)||null,
     item_no: document.getElementById('catItem').value.trim(),
     stock: stock==='' ? null : (Number(stock)||0),
+    packaging: document.getElementById('catPack').value,
     selling: document.getElementById('catSelling').checked,
     location: document.getElementById('catLoc').value.trim(),
     notes: document.getElementById('catNotes').value.trim()
