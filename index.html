@@ -73,6 +73,9 @@
   td input.num{text-align:right;}
   .del-row{border:none;background:none;color:var(--warn);cursor:pointer;font-size:1rem;padding:2px 6px;}
   tr.clickable{cursor:pointer;}
+  tr.size-sub td{background:#e6ede1;font-weight:800;color:var(--moss-deep);font-size:.86rem;
+    letter-spacing:.03em;padding:7px 6px;}
+  tr.row-partial td{background:#fbf4e9;}
   tr.row-done td{opacity:.5;text-decoration:line-through;}
   tr.row-done td:first-child{opacity:1;text-decoration:none;}
   .collect-box{width:18px;height:18px;accent-color:var(--moss);}
@@ -84,6 +87,8 @@
     padding:9px 12px;font-size:.85rem;margin:4px 0 8px;color:var(--moss-deep);}
   .arrow-btn{border:1px solid var(--line);background:#fff;border-radius:8px;width:32px;height:32px;
     font-size:1rem;cursor:pointer;color:var(--moss-deep);}
+  .creator-row td{color:var(--muted);font-size:.8rem;}
+  .creator-row td:first-child{padding-left:20px;}
   .stat-table td .barwrap{background:#e6ece2;border-radius:5px;height:9px;margin-top:4px;overflow:hidden;}
   .stat-table td .bar{background:var(--leaf);height:100%;border-radius:5px;}
   #printArea{display:none;}
@@ -547,10 +552,10 @@ function sizeBreakdownText(items){
     const lbl = s==='unsized' ? '?' : s+'mm';
     if(per && e.tray){
       const f=Math.floor(e.tray/per), l=e.tray%per;
-      if(f) parts.push(`${f}×${lbl} T`);
-      if(l) parts.push(`${l}×${lbl} loose`);
+      if(f) parts.push(`${f}T x ${lbl}`);
+      if(l) parts.push(`${l} x ${lbl} loose`);
     }
-    if(e.ind) parts.push(`${e.ind}×${lbl} pots`);
+    if(e.ind) parts.push(`${e.ind} x ${lbl} pots`);
   }
   return parts.join(' · ') || '—';
 }
@@ -968,19 +973,35 @@ function startManualOrder(){
 }
 function renderReviewTable(statedCount){
   const tb = document.querySelector('#rvTable tbody');
-  tb.innerHTML = reviewItems.map((it,i)=>`
-    <tr>
+  tb.innerHTML = reviewItems.map((it,i)=>{
+    const per = trayRules[it.size_mm!=null?it.size_mm:'unsized'] || null;
+    const warn = per && it.qty>0 && it.qty%per!==0;
+    return `
+    <tr class="${warn?'row-partial':''}">
       <td><input value="${esc(it.description)}" onchange="reviewItems[${i}].description=this.value"></td>
-      <td><input class="num" style="width:64px" value="${it.size_mm??''}" onchange="reviewItems[${i}].size_mm=Number(this.value)||null"></td>
-      <td><input class="num" style="width:56px" value="${it.qty}" onchange="reviewItems[${i}].qty=Number(this.value)||0"></td>
+      <td><input class="num" style="width:64px" value="${it.size_mm??''}" onchange="reviewItems[${i}].size_mm=Number(this.value)||null;renderReviewTable()"></td>
+      <td><input class="num" style="width:56px" value="${it.qty}" onchange="reviewItems[${i}].qty=Number(this.value)||0;renderReviewTable()"></td>
       <td><input class="num" style="width:70px" value="${it.unit_price??''}" onchange="reviewItems[${i}].unit_price=Number(this.value)||null"></td>
       <td><button class="del-row" onclick="reviewItems.splice(${i},1);renderReviewTable()">✕</button></td>
-    </tr>`).join('');
+    </tr>`;}).join('');
   let note = `${reviewItems.length} line(s).`;
   if(statedCount && statedCount!==reviewItems.length){
     note += ` ⚠ The PO footer says ${statedCount} items — you may be missing pages.`;
   }
-  document.getElementById('rvCount').textContent = note;
+  /* full-set check: tray-ruled sizes should arrive in multiples (e.g. 200mm in 6s) —
+     applies even to individually-packed species, which still sell as full sets */
+  const setOf = it => trayRules[it.size_mm!=null?it.size_mm:'unsized'] || null;
+  const short = reviewItems.filter(it=>{
+    const per = setOf(it);
+    return per && it.qty>0 && it.qty%per!==0;
+  });
+  if(short.length){
+    note += short.map(it=>{
+      const per = setOf(it);
+      return `<br>⚠ <b>${esc(prettyName(it.description))}</b>: ${it.qty} pots is not full sets (${per}/set — ${Math.floor(it.qty/per)} set(s) + ${it.qty%per} extra)`;
+    }).join('');
+  }
+  document.getElementById('rvCount').innerHTML = note;
 }
 function addBlankRow(){
   reviewItems.push({gtin:'',description:'',size_mm:null,qty:0,unit_price:null});
@@ -1342,23 +1363,36 @@ function toggleCollected(key, val, qty){
 function renderSpeciesRequired(spBox){
   const list = aggBySpecies();
   window._speciesList = list;
-  const collected = getCollected();
-  spBox.innerHTML = `<table>
-    <thead><tr><th style="width:26px" title="Collected in nursery">✓</th><th>Species</th><th>Size</th><th style="text-align:right">Qty</th><th>Pack</th><th style="text-align:right">Unit $</th><th>Location</th></tr></thead>
-    <tbody>${list.map((e,i)=>{
+  /* group by pot size, subtitle per size, no size column */
+  const bySize = {};
+  list.forEach((e,i)=>{ const k = e.size!=null ? e.size : 'unsized'; (bySize[k] ||= []).push([e,i]); });
+  const sizeKeys = sortSizes(Object.keys(bySize));
+  let rows = '';
+  for(const s of sizeKeys){
+    rows += `<tr class="size-sub"><td colspan="6">${s==='unsized'?'No size':s+'mm'}</td></tr>`;
+    for(const [e,i] of bySize[s]){
       const per = perForKey(e.key, e.size);
-      const pack = per ? `${Math.floor(e.qty/per)}T${e.qty%per?'+'+(e.qty%per):''}` : `${e.qty} pots`;
+      const packOf = q => per ? `${Math.floor(q/per)}T${q%per?'+'+(q%per):''}` : `${q} pots`;
+      const col = Math.max(0, Number(collected[e.key])||0);
+      const done = e.qty>0 && col>=e.qty;
+      const rem = Math.max(0, e.qty-col);
+      const partial = !done && col>0;
+      const packCell = done
+        ? `<b>${packOf(e.qty)}</b>`
+        : `<b>${packOf(rem)}</b>${partial?` <span class="muted">to go · ${col} done</span>`:''}`;
       const loc = catalog[e.key]?.location || '';
-      const done = collected[e.key]===e.qty;
-      return `<tr class="${done?'row-done':''}">
-        <td><input type="checkbox" class="collect-box" ${done?'checked':''} onclick="event.stopPropagation();toggleCollected('${e.key.replace(/'/g,"\\\\'")}',this.checked,${e.qty})"></td>
-        <td class="clickable" onclick="openSpecies(${i})">${esc(e.desc)}</td>
-        <td>${e.size?e.size+'mm':'—'}</td>
-        <td style="text-align:right">${e.qty}</td><td><b>${pack}</b></td>
+      rows += `<tr class="${done?'row-done':''}${partial?' row-partial':''}">
+        <td><input type="checkbox" class="collect-box" ${done?'checked':''} onclick="event.stopPropagation();toggleCollected('${e.key.replace(/'/g,"\\'")}',this.checked,${e.qty})"></td>
+        <td class="clickable" onclick="openSpecies(${i})">${esc(e.desc)}${partial?' <span class="pill warn">partly collected</span>':''}</td>
+        <td style="text-align:right">${e.qty}</td><td>${packCell}</td>
         <td style="text-align:right">${e.unit!=null?e.unit.toFixed(2):'—'}</td>
         <td>${esc(loc)||'<span class="muted">—</span>'}</td>
       </tr>`;
-    }).join('')}</tbody></table>`;
+    }
+  }
+  spBox.innerHTML = `<table>
+    <thead><tr><th style="width:26px" title="Collected in nursery">✓</th><th>Species</th><th style="text-align:right">Qty</th><th>Pack</th><th style="text-align:right">Unit $</th><th>Location</th></tr></thead>
+    <tbody>${rows}</tbody></table>`;
 }
 function openSpecies(i){
   const e = window._speciesList[i]; if(!e) return;
@@ -1403,7 +1437,8 @@ function closeModal(){ document.getElementById('modalBg').classList.remove('open
 /* ================= Excel export ================= */
 function exportExcel(){
   const status = document.getElementById('exportStatus');
-  const included = scopeOrders();
+  const included = scopeOrders()
+    .sort((a,b)=>(a.delivery_date||'9999').localeCompare(b.delivery_date||'9999') || (a.seq??a.id)-(b.seq??b.id));
   if(included.length===0){ status.className='status err'; status.textContent='No orders selected in this scope.'; return; }
   status.className='status';
 
@@ -1414,31 +1449,62 @@ function exportExcel(){
   const scopeLabel = planWeek==='none' ? 'Undated'
     : (planWeek==='all' ? 'All weeks' : 'Week '+weekLabel(planWeek)) + (planDay!=='All' ? ' — '+planDay : '');
 
+  /* Sheet 1: one row per PO, in delivery-schedule order */
   const s1 = [];
-  s1.push(['FREIGHT BOOKING FORM']);
+  s1.push(['FREIGHT BOOKING FORM — Plants Direct Queensland']);
   s1.push(['Booking date', dateStr]);
-  s1.push(['Delivery date', scopeLabel]);
-  s1.push(['Orders', included.map(o=>`${displayName(o)} (${last4(o.po_number)})`).join(', ')]);
-  s1.push(['Stores', [...new Set(included.map(storeNameOf))].join(', ')]);
+  s1.push(['Scope', scopeLabel]);
   s1.push(['Cut-off','Bookings in by 3:00pm day prior · receiving 7am-2pm (Yatala)']);
   if(notes) s1.push(['Notes', notes]);
   s1.push([]);
-  s1.push(['Pot size','Total pots','Pots per tray','Full trays','Loose pots']);
-  let tTrays=0,tLoose=0,tPots=0;
-  for(const s of sortSizes(Object.keys(agg))){
-    const qty = agg[s]; tPots+=qty;
-    const per = trayRules[s];
-    if(per){
-      const full=Math.floor(qty/per), loose=qty%per;
-      tTrays+=full; tLoose+=loose;
-      s1.push([s+'mm', qty, per, full, loose]);
-    }else{
-      tLoose+=qty;
-      s1.push([s==='unsized'?'No size':s+'mm', qty, '—', 0, qty]);
+
+  const sizesSet = new Set();
+  const rowsData = included.map(o=>{
+    const pools = {};
+    for(const it of activeItems(o)){
+      const s = it.size_mm!=null ? it.size_mm : 'unsized';
+      sizesSet.add(s);
+      const e = pools[s] ||= {tray:0, ind:0};
+      if(perForItem(it)) e.tray += it.qty; else e.ind += it.qty;
     }
+    return {o, pools};
+  });
+  const allSizes = sortSizes([...sizesSet]);
+  const traySizes = allSizes.filter(s=>trayRules[s]);
+  const sizeLbl = s => s==='unsized' ? 'No size' : s+'mm';
+  const header = ['Store','PO number','Delivery date',
+    ...traySizes.map(s=>sizeLbl(s)+' trays'), 'Total trays',
+    ...allSizes.map(s=> trayRules[s] ? sizeLbl(s)+' loose' : sizeLbl(s)+' pots'),
+    'Total pots','Value ex GST'];
+  s1.push(header);
+
+  const totTray = {}, totLoose = {};
+  let grandTrays = 0, grandPots = 0, grandVal = 0;
+  for(const {o, pools} of rowsData){
+    let rowTrays = 0, rowPots = 0;
+    const trayCols = traySizes.map(s=>{
+      const per = trayRules[s];
+      const f = Math.floor((pools[s]?.tray||0)/per);
+      rowTrays += f; totTray[s] = (totTray[s]||0) + f;
+      return f || '';
+    });
+    const looseCols = allSizes.map(s=>{
+      const per = trayRules[s];
+      const p = pools[s] || {tray:0, ind:0};
+      const q = per ? (p.tray % per) + p.ind : p.tray + p.ind;
+      rowPots += q; totLoose[s] = (totLoose[s]||0) + q;
+      return q || '';
+    });
+    const val = orderValue(o);
+    grandTrays += rowTrays; grandPots += rowPots; grandVal += val;
+    s1.push([storeNameOf(o), o.po_number, o.delivery_date||'',
+      ...trayCols, rowTrays || '', ...looseCols, rowPots || '', +val.toFixed(2)]);
   }
   s1.push([]);
-  s1.push(['TOTALS', tPots, '', tTrays, tLoose]);
+  s1.push(['TOTALS','','',
+    ...traySizes.map(s=>totTray[s]||''), grandTrays,
+    ...allSizes.map(s=>totLoose[s]||''), grandPots, +grandVal.toFixed(2)]);
+  const tTrays = grandTrays, tLoose = grandPots;
 
   const s2 = [['Species','Size (mm)','Total qty','Trays','Loose','Unit price','Total value','Nursery location','Notes']];
   let grand=0;
@@ -1462,7 +1528,8 @@ function exportExcel(){
         (!it.scratched && it.unit_price!=null)? +(it.unit_price*it.qty).toFixed(2):'']);
 
   const wb = XLSX.utils.book_new();
-  const ws1 = XLSX.utils.aoa_to_sheet(s1); ws1['!cols']=[{wch:16},{wch:48},{wch:14},{wch:11},{wch:11}];
+  const ws1 = XLSX.utils.aoa_to_sheet(s1);
+  ws1['!cols'] = header.map((h,i)=>({wch: i===0?20 : i===1?17 : Math.max(10, String(h).length+2)}));
   const ws2 = XLSX.utils.aoa_to_sheet(s2); ws2['!cols']=[{wch:40},{wch:9},{wch:9},{wch:7},{wch:7},{wch:10},{wch:11},{wch:22},{wch:30}];
   const ws3 = XLSX.utils.aoa_to_sheet(s3); ws3['!cols']=[{wch:20},{wch:16},{wch:12},{wch:9},{wch:16},{wch:12},{wch:9},{wch:9},{wch:15},{wch:40},{wch:9},{wch:6},{wch:10},{wch:10}];
   XLSX.utils.book_append_sheet(wb, ws1, 'Freight Summary');
@@ -1470,33 +1537,104 @@ function exportExcel(){
   XLSX.utils.book_append_sheet(wb, ws3, 'Line Detail');
   const scopeFile = (planWeek==='all'?'all':planWeek==='none'?'undated':'wk-'+planWeek) + (planDay!=='All'?'-'+planDay:'');
   XLSX.writeFile(wb, `freight-${scopeFile}.xlsx`);
-  status.textContent = `Exported ${included.length} order(s): ${tTrays} trays + ${tLoose} loose pots.`;
+  status.textContent = `Exported ${included.length} PO(s): ${grandTrays} trays + ${grandPots} loose/individual pots · $${grandVal.toFixed(2)}.`;
 }
 
 function printPickList(){
   const list = aggBySpecies();
   if(!list.length){ toast('Nothing in scope to print.', true); return; }
   const scope = (planWeek==='none' ? 'Undated orders' : 'Week '+weekLabel(planWeek)) + (planDay!=='All'?' — '+planDay:'');
-  const rows = list.map(e=>{
-    const per = perForKey(e.key, e.size);
-    const pack = per ? `${Math.floor(e.qty/per)}T${e.qty%per?'+'+(e.qty%per):''}` : `${e.qty} pots`;
-    return `<tr><td style="width:24pt;text-align:center">${collected[e.key]===e.qty?'☑':'☐'}</td>
-      <td>${esc(e.desc)}</td><td>${e.size?e.size+'mm':''}</td>
-      <td style="text-align:right">${e.qty}</td><td><b>${pack}</b></td>
-      <td>${esc(catalog[e.key]?.location||'')}</td></tr>`;
-  }).join('');
+  const bySize = {};
+  for(const e of list){ const k = e.size!=null ? e.size : 'unsized'; (bySize[k] ||= []).push(e); }
+  let rows = '';
+  for(const s of sortSizes(Object.keys(bySize))){
+    rows += `<tr><th colspan="6" style="background:#ddd;text-align:left">${s==='unsized'?'No size':s+'mm'}</th></tr>`;
+    for(const e of bySize[s]){
+      const per = perForKey(e.key, e.size);
+      const packOf = q => per ? `${Math.floor(q/per)}T${q%per?'+'+(q%per):''}` : `${q} pots`;
+      const col = Math.max(0, Number(collected[e.key])||0);
+      const done = e.qty>0 && col>=e.qty;
+      const rem = Math.max(0, e.qty-col);
+      rows += `<tr><td style="width:24pt;text-align:center">${done?'☑':'☐'}</td>
+        <td>${esc(e.desc)}</td>
+        <td style="text-align:right">${e.qty}</td>
+        <td><b>${packOf(done?e.qty:rem)}</b>${(!done&&col)?` <span style="color:#666">(${col} done)</span>`:''}</td>
+        <td style="text-align:right">${e.unit!=null?e.unit.toFixed(2):''}</td>
+        <td>${esc(catalog[e.key]?.location||'')}</td></tr>`;
+    }
+  }
   document.getElementById('printArea').innerHTML = `
     <h1>Pick list — ${esc(scope)}</h1>
     <div class="sub">Plants Direct Queensland · printed ${new Date().toLocaleString()} · ${list.length} species</div>
-    <table><thead><tr><th>✓</th><th>Species</th><th>Size</th><th>Qty</th><th>Pack</th><th>Location</th></tr></thead>
+    <table><thead><tr><th>✓</th><th>Species</th><th>Qty</th><th>Pack</th><th>Unit $</th><th>Location</th></tr></thead>
     <tbody>${rows}</tbody></table>`;
   window.print();
+}
+let statsMode = 'month';      // 'month' | 'quarter' | 'year'
+let statsPeriod = '';         // selected period key
+let statsSpSort = 'pots';     // 'pots' | 'trays' | 'value'
+let statsSpSearch = '';
+function periodKeyOf(iso, mode){
+  const d = new Date(iso+'T00:00:00'); const y = d.getFullYear();
+  if(mode==='year') return String(y);
+  if(mode==='quarter') return y+'-Q'+(Math.floor(d.getMonth()/3)+1);
+  return y+'-'+String(d.getMonth()+1).padStart(2,'0');
+}
+function periodLabelOf(k, mode){
+  if(mode==='year') return k;
+  if(mode==='quarter'){ const [y,q]=k.split('-'); return q+' '+y; }
+  const [y,mo]=k.split('-'); return MONTH_SHORT[Number(mo)-1]+' '+y;
+}
+function setStatsMode(m, btn){ statsMode=m; statsPeriod=''; renderStats(); }
+function setStatsPeriod(p, btn){ statsPeriod=p; renderStats(); }
+function setStatsSpSort(v){ statsSpSort=v; renderStats(); }
+function statsPeriodOrders(){
+  return orders.filter(o=>o.delivery_date && periodKeyOf(o.delivery_date, statsMode)===statsPeriod);
+}
+function renderStatsSpecies(){
+  const box = document.getElementById('spSalesBody');
+  if(!box) return;
+  const map = {};
+  for(const o of statsPeriodOrders())
+    for(const it of activeItems(o)){
+      const k = canonKey(it.description, it.size_mm);
+      const e = map[k] ||= {key:k, desc:prettyName(it.description), size:it.size_mm??guessSize(it.description), qty:0, value:0};
+      e.qty += it.qty;
+      if(it.unit_price!=null) e.value += it.unit_price*it.qty;
+    }
+  let list = Object.values(map).map(e=>{
+    const per = perForKey(e.key, e.size);
+    e.trays = per ? Math.floor(e.qty/per) : 0;
+    e.loose = per ? e.qty%per : e.qty;
+    return e;
+  });
+  const q = statsSpSearch.toUpperCase().trim();
+  if(q) list = list.filter(e=>e.desc.toUpperCase().includes(q));
+  list.sort((a,b)=> statsSpSort==='trays' ? b.trays-a.trays || b.qty-a.qty
+              : statsSpSort==='value' ? b.value-a.value
+              : b.qty-a.qty);
+  const shown = list.slice(0,30);
+  if(!shown.length){ box.innerHTML = '<div class="empty">Nothing matches in this period.</div>'; return; }
+  const maxQ = Math.max(...shown.map(e=> statsSpSort==='value'?e.value : statsSpSort==='trays'?e.trays : e.qty), 1);
+  box.innerHTML = `<table class="stat-table">
+    <thead><tr><th>#</th><th>Species</th><th style="text-align:right">Trays</th><th style="text-align:right">Loose/pots</th><th style="text-align:right">Total pots</th><th style="text-align:right">Value</th></tr></thead>
+    <tbody>${shown.map((e,i)=>{
+      const metric = statsSpSort==='value'?e.value : statsSpSort==='trays'?e.trays : e.qty;
+      return `<tr><td>${i+1}</td><td>${esc(e.desc)}
+          <div class="barwrap"><div class="bar" style="width:${Math.round(100*metric/maxQ)}%"></div></div></td>
+        <td style="text-align:right">${e.trays||'—'}</td>
+        <td style="text-align:right">${e.loose||'—'}</td>
+        <td style="text-align:right"><b>${e.qty}</b></td>
+        <td style="text-align:right">$${e.value.toFixed(0)}</td></tr>`;
+    }).join('')}</tbody></table>
+    ${list.length>30?`<p class="muted" style="margin-top:6px">Showing top 30 of ${list.length} — refine with search.</p>`:''}`;
 }
 function renderStats(){
   const box = document.getElementById('statsBody');
   if(!box) return;
   if(orders.length===0){ box.innerHTML = '<div class="empty">No orders yet.</div>'; return; }
-  /* weekly */
+
+  /* ---- weekly volume table ---- */
   const wk = {};
   for(const o of orders){
     const w = o.delivery_date ? weekStartOf(o.delivery_date) : 'none';
@@ -1514,43 +1652,68 @@ function renderStats(){
       <td style="text-align:right;min-width:110px"><b>$${e.value.toFixed(0)}</b>
         <div class="barwrap"><div class="bar" style="width:${Math.round(100*e.value/maxV)}%"></div></div></td></tr>`;
   }).join('');
-  /* by PO creator */
-  const cr = {};
-  for(const o of orders){
-    const k = o.created_by || 'Unknown';
-    const e = cr[k] ||= {orders:0, pots:0, value:0};
-    const t = orderTallies(o);
-    e.orders++; e.pots += t.totalPots; e.value += orderValue(o);
-  }
-  const creators = Object.keys(cr).sort((a,b)=>cr[b].value-cr[a].value);
-  const crRows = creators.map(k=>`<tr><td>${esc(k)}</td>
-    <td style="text-align:right">${cr[k].orders}</td><td style="text-align:right">${cr[k].pots}</td>
-    <td style="text-align:right"><b>$${cr[k].value.toFixed(0)}</b></td></tr>`).join('');
-  /* by store */
+
+  /* ---- store spend by period, creators nested under each store ---- */
+  const dated = orders.filter(o=>o.delivery_date);
+  const periods = [...new Set(dated.map(o=>periodKeyOf(o.delivery_date, statsMode)))].sort().reverse();
+  if(!statsPeriod || !periods.includes(statsPeriod)) statsPeriod = periods[0]||'';
+  const modeSeg = ['month','quarter','year'].map(m=>
+    `<button class="${statsMode===m?'on':''}" onclick="setStatsMode('${m}',this)">${m[0].toUpperCase()+m.slice(1)}</button>`).join('');
+  const periodSeg = periods.slice(0,10).map(p=>
+    `<button class="${statsPeriod===p?'on':''}" onclick="setStatsPeriod('${p}',this)">${periodLabelOf(p,statsMode)}</button>`).join('');
+
+  const inPeriod = dated.filter(o=>periodKeyOf(o.delivery_date, statsMode)===statsPeriod);
   const st = {};
-  for(const o of orders){
+  for(const o of inPeriod){
     const k = storeNameOf(o);
-    const e = st[k] ||= {orders:0, pots:0, value:0};
+    const e = st[k] ||= {orders:0, pots:0, trays:0, value:0, creators:{}};
     const t = orderTallies(o);
-    e.orders++; e.pots += t.totalPots; e.value += orderValue(o);
+    e.orders++; e.pots += t.totalPots; e.trays += t.trays; e.value += orderValue(o);
+    const cName = o.created_by || 'Unknown';
+    const c = e.creators[cName] ||= {orders:0, pots:0, value:0};
+    c.orders++; c.pots += t.totalPots; c.value += orderValue(o);
   }
-  const storesTop = Object.keys(st).sort((a,b)=>st[b].value-st[a].value).slice(0,10);
-  const stRows = storesTop.map(k=>`<tr><td>${esc(k)}</td>
-    <td style="text-align:right">${st[k].orders}</td><td style="text-align:right">${st[k].pots}</td>
-    <td style="text-align:right"><b>$${st[k].value.toFixed(0)}</b></td></tr>`).join('');
+  const storeKeys = Object.keys(st).sort((a,b)=>st[b].value-st[a].value);
+  let periodTotal = 0;
+  const stRows = storeKeys.map(k=>{
+    const e = st[k]; periodTotal += e.value;
+    const creators = Object.keys(e.creators).sort((a,b)=>e.creators[b].value-e.creators[a].value);
+    const sub = creators.map(c=>`<tr class="creator-row">
+        <td>↳ ${esc(c)}</td>
+        <td style="text-align:right">${e.creators[c].orders}</td>
+        <td style="text-align:right">${e.creators[c].pots}</td>
+        <td style="text-align:right">$${e.creators[c].value.toFixed(0)}</td></tr>`).join('');
+    return `<tr><td><b>${esc(k)}</b></td>
+      <td style="text-align:right"><b>${e.orders}</b></td>
+      <td style="text-align:right"><b>${e.pots}</b></td>
+      <td style="text-align:right"><b>$${e.value.toFixed(0)}</b></td></tr>` + sub;
+  }).join('');
+
+  const undatedCount = orders.length - dated.length;
   box.innerHTML = `
     <h3>By week</h3>
     <div style="overflow-x:auto"><table class="stat-table">
       <thead><tr><th>Week</th><th style="text-align:right">POs</th><th style="text-align:right">Trays</th><th style="text-align:right">Pots</th><th style="text-align:right">Value ex GST</th></tr></thead>
       <tbody>${weekRows}</tbody></table></div>
-    <h3 style="margin-top:18px">By PO creator</h3>
+    <h3 style="margin-top:20px">Store spend <span class="muted" style="font-weight:400">· PO creators nested under each store</span></h3>
+    <div class="seg" style="margin-top:8px">${modeSeg}</div>
+    <div class="seg">${periodSeg||'<span class="muted">No dated orders yet.</span>'}</div>
     <div style="overflow-x:auto"><table class="stat-table">
-      <thead><tr><th>Created by</th><th style="text-align:right">POs</th><th style="text-align:right">Pots</th><th style="text-align:right">Value</th></tr></thead>
-      <tbody>${crRows}</tbody></table></div>
-    <h3 style="margin-top:18px">Top stores</h3>
-    <div style="overflow-x:auto"><table class="stat-table">
-      <thead><tr><th>Store</th><th style="text-align:right">POs</th><th style="text-align:right">Pots</th><th style="text-align:right">Value</th></tr></thead>
-      <tbody>${stRows}</tbody></table></div>`;
+      <thead><tr><th>Store / creator</th><th style="text-align:right">POs</th><th style="text-align:right">Pots</th><th style="text-align:right">Value</th></tr></thead>
+      <tbody>${stRows || '<tr><td colspan="4" class="muted">Nothing in this period.</td></tr>'}
+      ${stRows?`<tr><td><b>Period total</b></td><td></td><td></td><td style="text-align:right"><b>$${periodTotal.toFixed(0)}</b></td></tr>`:''}
+      </tbody></table></div>
+    <h3 style="margin-top:20px">Species sales <span class="muted" style="font-weight:400">· best sellers in ${statsPeriod?periodLabelOf(statsPeriod, statsMode):'period'}</span></h3>
+    <div class="seg" style="margin-top:8px">
+      <button class="${statsSpSort==='pots'?'on':''}" onclick="setStatsSpSort('pots')">By pots</button>
+      <button class="${statsSpSort==='trays'?'on':''}" onclick="setStatsSpSort('trays')">By trays</button>
+      <button class="${statsSpSort==='value'?'on':''}" onclick="setStatsSpSort('value')">By value</button>
+    </div>
+    <input class="text" id="spSalesSearch" placeholder="Search species…" value="${esc(statsSpSearch)}"
+      oninput="statsSpSearch=this.value;renderStatsSpecies()" style="margin-bottom:8px">
+    <div style="overflow-x:auto"><div id="spSalesBody"></div></div>
+    ${undatedCount?`<p class="muted" style="margin-top:8px">${undatedCount} order(s) without a delivery date are excluded from period figures.</p>`:''}`;
+  renderStatsSpecies();
 }
 function exportSellingList(){
   const rows = Object.values(catalog).filter(c=>c.selling)
