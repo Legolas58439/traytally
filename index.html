@@ -282,7 +282,12 @@
         <h2 style="margin:0">Species required <span class="muted" style="font-weight:400">(tick ✓ when collected)</span></h2>
         <button class="btn small secondary" onclick="printPickList()">🖨 Print / PDF</button>
       </div>
-      <div style="overflow-x:auto;margin-top:8px"><div id="speciesView"><div class="empty">No orders in this scope.</div></div></div>
+      <div class="seg" style="margin-top:8px">
+        <button id="pmSpecies" class="on" onclick="setPickMode('species',this)">By species (tallied)</button>
+        <button id="pmStore" onclick="setPickMode('store',this)">By store (delivery order)</button>
+        <button id="pmEff" onclick="setPickMode('eff',this)">Efficient pull</button>
+      </div>
+      <div style="overflow-x:auto;margin-top:4px"><div id="speciesView"><div class="empty">No orders in this scope.</div></div></div>
     </div>
     <div class="card">
       <h2>Tray &amp; pot totals</h2>
@@ -1400,10 +1405,22 @@ function toggleCollected(key, val, qty){
   const tr = event.target.closest('tr');
   if(tr) tr.classList.toggle('row-done', val);
 }
+let pickMode = 'species';   // 'species' (tallied) | 'store' (delivery order)
+function setPickMode(m, btn){
+  pickMode = m;
+  document.getElementById('pmSpecies').classList.toggle('on', m==='species');
+  document.getElementById('pmStore').classList.toggle('on', m==='store');
+  document.getElementById('pmEff').classList.toggle('on', m==='eff');
+  renderAggregate();
+}
+function scheduleSorted(list){
+  return [...list].sort((a,b)=>(a.delivery_date||'9999').localeCompare(b.delivery_date||'9999') || (a.seq??a.id)-(b.seq??b.id));
+}
 function renderSpeciesRequired(spBox){
+  if(pickMode==='store'){ renderPickByStore(spBox); return; }
+  if(pickMode==='eff'){ renderPickEfficient(spBox); return; }
   const list = aggBySpecies();
   window._speciesList = list;
-  /* group by pot size, subtitle per size, no size column */
   const bySize = {};
   list.forEach((e,i)=>{ const k = e.size!=null ? e.size : 'unsized'; (bySize[k] ||= []).push([e,i]); });
   const sizeKeys = sortSizes(Object.keys(bySize));
@@ -1429,6 +1446,92 @@ function renderSpeciesRequired(spBox){
         <td>${esc(loc)||'<span class="muted">—</span>'}</td>
       </tr>`;
     }
+  }
+  spBox.innerHTML = `<table>
+    <thead><tr><th style="width:26px" title="Collected in nursery">✓</th><th>Species</th><th style="text-align:right">Qty</th><th>Pack</th><th style="text-align:right">Unit $</th><th>Location</th></tr></thead>
+    <tbody>${rows}</tbody></table>`;
+}
+function storeItemRows(o){
+  const items = activeItems(o).slice().sort((a,b)=>((a.size_mm||999)-(b.size_mm||999)) || a.description.localeCompare(b.description));
+  return items.map(it=>{
+    const key = canonKey(it.description, it.size_mm);
+    const ck = 'o'+o.id+'|'+key;
+    const per = perForItem(it);
+    const pack = per ? `${Math.floor(it.qty/per)}T${it.qty%per?'+'+(it.qty%per):''}` : `${it.qty} pots`;
+    const done = Number(collected[ck])===it.qty && it.qty>0;
+    const loc = catalog[key]?.location || '';
+    return `<tr class="${done?'row-done':''}">
+      <td><input type="checkbox" class="collect-box" ${done?'checked':''} onclick="event.stopPropagation();toggleCollected('${ck.replace(/'/g,"\\'")}',this.checked,${it.qty})"></td>
+      <td>${esc(prettyName(it.description))}</td>
+      <td style="text-align:right">${it.qty}</td><td><b>${pack}</b></td>
+      <td style="text-align:right">${it.unit_price!=null?it.unit_price.toFixed(2):'—'}</td>
+      <td>${esc(loc)||'<span class="muted">—</span>'}</td>
+    </tr>`;
+  }).join('');
+}
+function buildEfficientSections(){
+  /* walk stores in delivery order; a species appears once, at the FIRST store
+     that needs it, with quantities from all later stores combined */
+  const ordersList = scheduleSorted(scopeOrders());
+  const seen = new Set();
+  const sections = [];
+  for(const o of ordersList){
+    const items = activeItems(o).slice().sort((a,b)=>((a.size_mm||999)-(b.size_mm||999)) || a.description.localeCompare(b.description));
+    const rows = [];
+    for(const it of items){
+      const key = canonKey(it.description, it.size_mm);
+      if(seen.has(key)) continue;
+      seen.add(key);
+      let total = 0; const split = [];
+      for(const o2 of ordersList){
+        const q = activeItems(o2).filter(x=>canonKey(x.description,x.size_mm)===key)
+          .reduce((s,x)=>s+x.qty,0);
+        if(q){ total += q; split.push(`${displayName(o2)} ${q}`); }
+      }
+      rows.push({key, desc:prettyName(it.description), size:it.size_mm??guessSize(it.description),
+        total, split, unit:it.unit_price});
+    }
+    if(rows.length) sections.push({o, rows});
+  }
+  return sections;
+}
+function renderPickEfficient(spBox){
+  const sections = buildEfficientSections();
+  if(!sections.length){ spBox.innerHTML = '<div class="empty">No orders in this scope.</div>'; return; }
+  let rows = '';
+  for(const {o, rows:rs} of sections){
+    rows += `<tr class="size-sub"><td colspan="6">${esc(displayName(o))} <span class="muted">· ${last4(o.po_number)} · ${o.delivery_date?fmtNice(o.delivery_date):'no date'} · later stores' quantities included</span></td></tr>`;
+    for(const r of rs){
+      const per = perForKey(r.key, r.size);
+      const packOf = q => per ? `${Math.floor(q/per)}T${q%per?'+'+(q%per):''}` : `${q} pots`;
+      const col = Math.max(0, Number(collected[r.key])||0);
+      const done = r.total>0 && col>=r.total;
+      const rem = Math.max(0, r.total-col);
+      const partial = !done && col>0;
+      const packCell = done ? `<b>${packOf(r.total)}</b>`
+        : `<b>${packOf(rem)}</b>${partial?` <span class="muted">to go · ${col} done</span>`:''}`;
+      const loc = catalog[r.key]?.location || '';
+      rows += `<tr class="${done?'row-done':''}${partial?' row-partial':''}">
+        <td><input type="checkbox" class="collect-box" ${done?'checked':''} onclick="event.stopPropagation();toggleCollected('${r.key.replace(/'/g,"\\'")}',this.checked,${r.total})"></td>
+        <td>${esc(r.desc)}${r.split.length>1?`<div class="muted" style="font-size:.74rem">${esc(r.split.join(' · '))}</div>`:''}</td>
+        <td style="text-align:right">${r.total}</td><td>${packCell}</td>
+        <td style="text-align:right">${r.unit!=null?r.unit.toFixed(2):'—'}</td>
+        <td>${esc(loc)||'<span class="muted">—</span>'}</td>
+      </tr>`;
+    }
+  }
+  spBox.innerHTML = `<table>
+    <thead><tr><th style="width:26px" title="Collected in nursery">✓</th><th>Species</th><th style="text-align:right">Qty</th><th>Pack</th><th style="text-align:right">Unit $</th><th>Location</th></tr></thead>
+    <tbody>${rows}</tbody></table>`;
+}
+function renderPickByStore(spBox){
+  const list = scheduleSorted(scopeOrders());
+  if(!list.length){ spBox.innerHTML = '<div class="empty">No orders in this scope.</div>'; return; }
+  let rows = '';
+  for(const o of list){
+    const t = orderTallies(o);
+    rows += `<tr class="size-sub"><td colspan="6">${esc(displayName(o))} <span class="muted">· ${last4(o.po_number)} · ${o.delivery_date?fmtNice(o.delivery_date):'no date'} · T = ${t.trays} · P = ${t.pots}</span></td></tr>`;
+    rows += storeItemRows(o);
   }
   spBox.innerHTML = `<table>
     <thead><tr><th style="width:26px" title="Collected in nursery">✓</th><th>Species</th><th style="text-align:right">Qty</th><th>Pack</th><th style="text-align:right">Unit $</th><th>Location</th></tr></thead>
@@ -1581,33 +1684,80 @@ function exportExcel(){
 }
 
 function printPickList(){
-  const list = aggBySpecies();
-  if(!list.length){ toast('Nothing in scope to print.', true); return; }
   const scope = (planWeek==='none' ? 'Undated orders' : 'Week '+weekLabel(planWeek)) + (planDay!=='All'?' — '+planDay:'');
-  const bySize = {};
-  for(const e of list){ const k = e.size!=null ? e.size : 'unsized'; (bySize[k] ||= []).push(e); }
-  let rows = '';
-  for(const s of sortSizes(Object.keys(bySize))){
-    rows += `<tr><th colspan="6" style="background:#ddd;text-align:left">${s==='unsized'?'No size':s+'mm'}</th></tr>`;
-    for(const e of bySize[s]){
-      const per = perForKey(e.key, e.size);
-      const packOf = q => per ? `${Math.floor(q/per)}T${q%per?'+'+(q%per):''}` : `${q} pots`;
-      const col = Math.max(0, Number(collected[e.key])||0);
-      const done = e.qty>0 && col>=e.qty;
-      const rem = Math.max(0, e.qty-col);
-      rows += `<tr><td style="width:24pt;text-align:center">${done?'☑':'☐'}</td>
-        <td>${esc(e.desc)}</td>
-        <td style="text-align:right">${e.qty}</td>
-        <td><b>${packOf(done?e.qty:rem)}</b>${(!done&&col)?` <span style="color:#666">(${col} done)</span>`:''}</td>
-        <td style="text-align:right">${e.unit!=null?e.unit.toFixed(2):''}</td>
-        <td>${esc(catalog[e.key]?.location||'')}</td></tr>`;
+  let body = '', count = 0, title = '';
+  if(pickMode==='eff'){
+    const sections = buildEfficientSections();
+    if(!sections.length){ toast('Nothing in scope to print.', true); return; }
+    title = 'Efficient pull list (first store collects for later stores)';
+    for(const {o, rows:rs} of sections){
+      body += `<tr><th colspan="6" style="background:#ddd;text-align:left">${esc(displayName(o))} — PO ${esc(o.po_number)} · ${o.delivery_date?fmtNice(o.delivery_date):'no date'}</th></tr>`;
+      for(const r of rs){
+        count++;
+        const per = perForKey(r.key, r.size);
+        const packOf = q => per ? `${Math.floor(q/per)}T${q%per?'+'+(q%per):''}` : `${q} pots`;
+        const col = Math.max(0, Number(collected[r.key])||0);
+        const done = r.total>0 && col>=r.total;
+        const rem = Math.max(0, r.total-col);
+        body += `<tr><td style="width:24pt;text-align:center">${done?'☑':'☐'}</td>
+          <td>${esc(r.desc)}${r.split.length>1?`<br><span style="color:#555;font-size:8pt">${esc(r.split.join(' · '))}</span>`:''}</td>
+          <td style="text-align:right">${r.total}</td>
+          <td><b>${packOf(done?r.total:rem)}</b>${(!done&&col)?` <span style="color:#666">(${col} done)</span>`:''}</td>
+          <td style="text-align:right">${r.unit!=null?r.unit.toFixed(2):''}</td>
+          <td>${esc(catalog[r.key]?.location||'')}</td></tr>`;
+      }
+    }
+  }else if(pickMode==='store'){
+    const list = scheduleSorted(scopeOrders());
+    if(!list.length){ toast('Nothing in scope to print.', true); return; }
+    title = 'Pick list by store (delivery order)';
+    for(const o of list){
+      const t = orderTallies(o);
+      body += `<tr><th colspan="6" style="background:#ddd;text-align:left">${esc(displayName(o))} — PO ${esc(o.po_number)} · ${o.delivery_date?fmtNice(o.delivery_date):'no date'} · T = ${t.trays} · P = ${t.pots}</th></tr>`;
+      const items = activeItems(o).slice().sort((a,b)=>((a.size_mm||999)-(b.size_mm||999)) || a.description.localeCompare(b.description));
+      for(const it of items){
+        count++;
+        const key = canonKey(it.description, it.size_mm);
+        const ck = 'o'+o.id+'|'+key;
+        const per = perForItem(it);
+        const pack = per ? `${Math.floor(it.qty/per)}T${it.qty%per?'+'+(it.qty%per):''}` : `${it.qty} pots`;
+        const done = Number(collected[ck])===it.qty && it.qty>0;
+        body += `<tr><td style="width:24pt;text-align:center">${done?'☑':'☐'}</td>
+          <td>${esc(prettyName(it.description))}</td>
+          <td style="text-align:right">${it.qty}</td><td><b>${pack}</b></td>
+          <td style="text-align:right">${it.unit_price!=null?it.unit_price.toFixed(2):''}</td>
+          <td>${esc(catalog[key]?.location||'')}</td></tr>`;
+      }
+    }
+  }else{
+    const list = aggBySpecies();
+    if(!list.length){ toast('Nothing in scope to print.', true); return; }
+    title = 'Pick list by species';
+    count = list.length;
+    const bySize = {};
+    for(const e of list){ const k = e.size!=null ? e.size : 'unsized'; (bySize[k] ||= []).push(e); }
+    for(const s of sortSizes(Object.keys(bySize))){
+      body += `<tr><th colspan="6" style="background:#ddd;text-align:left">${s==='unsized'?'No size':s+'mm'}</th></tr>`;
+      for(const e of bySize[s]){
+        const per = perForKey(e.key, e.size);
+        const packOf = q => per ? `${Math.floor(q/per)}T${q%per?'+'+(q%per):''}` : `${q} pots`;
+        const col = Math.max(0, Number(collected[e.key])||0);
+        const done = e.qty>0 && col>=e.qty;
+        const rem = Math.max(0, e.qty-col);
+        body += `<tr><td style="width:24pt;text-align:center">${done?'☑':'☐'}</td>
+          <td>${esc(e.desc)}</td>
+          <td style="text-align:right">${e.qty}</td>
+          <td><b>${packOf(done?e.qty:rem)}</b>${(!done&&col)?` <span style="color:#666">(${col} done)</span>`:''}</td>
+          <td style="text-align:right">${e.unit!=null?e.unit.toFixed(2):''}</td>
+          <td>${esc(catalog[e.key]?.location||'')}</td></tr>`;
+      }
     }
   }
   document.getElementById('printArea').innerHTML = `
-    <h1>Pick list — ${esc(scope)}</h1>
-    <div class="sub">Plants Direct Queensland · printed ${new Date().toLocaleString()} · ${list.length} species</div>
+    <h1>${title} — ${esc(scope)}</h1>
+    <div class="sub">Plants Direct Queensland · printed ${new Date().toLocaleString()} · ${count} line(s)</div>
     <table><thead><tr><th>✓</th><th>Species</th><th>Qty</th><th>Pack</th><th>Unit $</th><th>Location</th></tr></thead>
-    <tbody>${rows}</tbody></table>`;
+    <tbody>${body}</tbody></table>`;
   window.print();
 }
 let statsMode = 'month';      // 'month' | 'quarter' | 'year'
