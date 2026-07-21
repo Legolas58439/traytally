@@ -775,7 +775,7 @@ Rules:
 - size_mm: parse pot size from the description, e.g. "LOMANDRA LONGIFOLIA 130MM" -> 130. Null if none shown.
 - qty is the Qty column (individual pots, UOM Each).
 - Keep descriptions verbatim in uppercase as printed.
-- item_no: the Supplier Item No. / Bunnings item number column value if present, else null.
+- item_no: the value in the "Bunnings Item No." column (e.g. 0185659); NOT the Supplier Item No. column, which is usually blank. Null if absent.
 - store: the Bunnings store name and/or number (often near "Deliver To"/"Ship To"), else null.
 - created_by: the 'Created By' name on the PO if visible, else null.
 - po_number: the long order reference (e.g. 8056S108244503), else null.
@@ -805,6 +805,7 @@ async function extractOrders(){
         const page = await extractPage(job[i]);
         for(const k of Object.keys(meta)) if(meta[k]==null && page[k]!=null) meta[k]=page[k];
         if(Array.isArray(page.items)) items.push(...page.items);
+        if(page._truncated) meta._truncated = true;
       }
       if(items.length) reviewQueue.push({meta, items: items.map(normItem)});
     }
@@ -847,7 +848,7 @@ async function extractPage(page){
     headers,
     body: JSON.stringify({
       model:'claude-sonnet-4-6',
-      max_tokens:1000,
+      max_tokens:4000,
       messages:[{role:'user',content:[block,{type:'text',text:EXTRACT_PROMPT}]}]
     })
   });
@@ -855,9 +856,21 @@ async function extractPage(page){
   if(data.error) throw new Error(data.error.message||'API error');
   const text = (data.content||[]).filter(c=>c.type==='text').map(c=>c.text).join('\n');
   const clean = text.replace(/```json|```/g,'').trim();
-  const start = clean.indexOf('{'); const end = clean.lastIndexOf('}');
-  if(start<0||end<0) throw new Error('Could not parse the response as JSON.');
-  return JSON.parse(clean.slice(start,end+1));
+  const start = clean.indexOf('{');
+  if(start<0) throw new Error('Could not parse the response as JSON.');
+  const end = clean.lastIndexOf('}');
+  let txt = clean.slice(start, end>start ? end+1 : clean.length);
+  try{ return JSON.parse(txt); }catch(e){}
+  /* salvage a reply cut off mid-list: keep complete items, close the brackets */
+  const cut = txt.lastIndexOf('},');
+  if(cut>0){
+    try{
+      const r = JSON.parse(txt.slice(0, cut+1) + ']}');
+      r._truncated = true;
+      return r;
+    }catch(e){}
+  }
+  throw new Error('Could not parse the response as JSON.');
 }
 function guessSize(desc){
   const m = /(\d{2,3})\s*MM/i.exec(desc||'');
@@ -928,6 +941,7 @@ function loadReview(){
   document.getElementById('rvAlloc').checked = isAllocationPo(po);
   dateWarn('rvDate','rvDateWarn','rvStoreNo');
   const pos = Math.max(1, reviewBatchTotal - reviewQueue.length + 1);
+  if(meta._truncated) toast("The reader's reply was cut short — check the line count against the PO's Items footer.", true);
   document.getElementById('rvQueuePos').textContent =
     reviewBatchTotal>1 ? `PO ${pos} of ${reviewBatchTotal}` : 'reviewing';
   document.getElementById('rvSaveBtn').textContent =
@@ -1074,7 +1088,7 @@ function orderCard(o){
       <div class="row" style="flex-wrap:nowrap">
         <button class="arrow-btn" onclick="event.stopPropagation();moveOrder(${o.id},-1)">↑</button>
         <button class="arrow-btn" onclick="event.stopPropagation();moveOrder(${o.id},1)">↓</button>
-        <button class="btn small danger" onclick="event.stopPropagation();deleteOrder(${o.id}, this)">Del</button>
+        <button class="btn small danger" style="min-width:52px" onclick="event.stopPropagation();deleteOrderCard(${o.id}, this)">Del</button>
       </div>
     </div>
   </div>`;
@@ -1164,6 +1178,31 @@ function renderOrders(){
       + g.map(orderCard).join('');
   }).join('');
 }
+function armThenRun(btn, fn, label){
+  /* confirm() popups are blocked in sandboxed frames — two-tap confirm instead */
+  if(!btn){ fn(); return; }
+  if(btn.dataset.armed){
+    btn.dataset.armed=''; btn.classList.remove('armed');
+    try{ fn(); }catch(e){ toast('Error: '+e.message, true); }
+    return;
+  }
+  btn.dataset.armed = '1';
+  btn.classList.add('armed');
+  const orig = btn.textContent;
+  if(btn.offsetWidth) btn.style.minWidth = btn.offsetWidth+'px';
+  btn.textContent = label || 'Tap again to delete';
+  setTimeout(()=>{ if(btn.isConnected && btn.dataset.armed){ btn.dataset.armed=''; btn.classList.remove('armed'); btn.textContent = orig; } }, 4000);
+}
+function deleteOrderCard(id, btn){
+  /* short arm label so the button doesn't reflow and dodge the second tap */
+  armThenRun(btn, ()=>{ reallyDeleteOrder(id); }, 'Sure?');
+}
+function reallyDeleteOrder(id){
+  const before = orders.length;
+  orders = orders.filter(o=>o.id!==id);
+  persist(); renderOrders(); renderWeekSegs(); renderAggregate();
+  toast(before>orders.length ? 'Order deleted' : 'Order not found — try reloading', before<=orders.length);
+}
 function deleteOrder(id, btn){
   armThenRun(btn, ()=>{
     const before = orders.length;
@@ -1207,6 +1246,7 @@ function openOrderEdit(id){
     <div class="row" style="margin-top:14px">
       <button class="btn" onclick="saveOrderEdit(${o.id})">Save</button>
       <button class="btn secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn danger" onclick="armThenRun(this, ()=>{ closeModal(); reallyDeleteOrder(${o.id}); }, 'Tap again to delete PO')">Delete PO</button>
     </div>`;
   renderEditItems();
   openModal();
