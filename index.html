@@ -217,6 +217,7 @@
         <div style="flex:2;min-width:170px">
           <label class="field">PO number</label>
           <input class="text" id="rvPo" onchange="poChanged()">
+          <div class="warn-inline" id="rvPoWarn"></div>
         </div>
         <div style="flex:1;min-width:110px">
           <label class="field">Store number</label>
@@ -608,8 +609,9 @@ function toast(msg, isErr){
 window.addEventListener('error', e=>{
   toast('App error: ' + (e.message||'unknown'), true);
 });
+const DATA_REV = 1;   // bump when a one-time data migration is added in applyLoadedData
 async function persist(){
-  const payload = JSON.stringify({orders, trayRules, storeMap, catalog, collected});
+  const payload = JSON.stringify({rev: DATA_REV, orders, trayRules, storeMap, catalog, collected});
   let ok = false;
   /* write to BOTH stores when available — whichever survives, the data survives */
   try{ await window.storage.set('traytally', payload); ok = true; }catch(e){}
@@ -629,6 +631,65 @@ function updateSaveInfo(){
   el.textContent = `${orders.length} order(s) · ${Object.keys(catalog).length} species stored in this browser`
     + (when ? ` · last saved ${new Date(when).toLocaleString()}` : '');
 }
+function applyLoadedData(d){
+  /* single entry point for loading persisted/backup data — ALL migrations live here
+     so restoring an old backup file behaves the same as an app reload */
+  if(Array.isArray(d.orders)) orders = d.orders;
+  if(d.trayRules) trayRules = d.trayRules;
+  if(d.storeMap) storeMap = d.storeMap;
+  if(d.catalog) catalog = d.catalog;
+  if(d.collected) collected = d.collected;
+  const rev = Number(d.rev)||0;
+  /* collected ticks: legacy true -> -1; un-scoped keys adopt the current week;
+     ticks from weeks before last week are stale — prune them */
+  const curWk = weekStartOf(fmtISO(new Date()));
+  const keepFrom = (()=>{ const t = new Date(curWk+'T00:00:00'); t.setDate(t.getDate()-7); return fmtISO(t); })();
+  const migC = {};
+  for(const [k0,v] of Object.entries(collected)){
+    let k = k0;
+    const wm = /^w[^|]*\|/.exec(k);                 // week scope (added if missing)
+    const wPart = wm ? wm[0] : 'w'+curWk+'|';
+    if(wm) k = k.slice(wm[0].length);
+    const om = /^o\d+\|/.exec(k);                   // by-store order scope
+    const oPart = om ? om[0] : '';
+    if(om) k = k.slice(om[0].length);
+    const sm = /^(.+)\|([^|]*)$/.exec(k);           // species|size — re-canonicalise so
+    if(sm) k = canonKey(sm[1], sm[2]==='' ? null : Number(sm[2])||null); // key-rule changes (e.g. PBR) keep live ticks
+    const pm = /^w(\d{4}-\d{2}-\d{2})\|$/.exec(wPart);
+    if(pm && pm[1] < keepFrom) continue;
+    migC[wPart + oPart + k] = v===true ? -1 : v;
+  }
+  collected = migC;
+  /* migrate older storeMap shapes */
+  for(const v of Object.values(storeMap)){
+    if(v && v.day !== undefined){ v.days = v.day ? {[v.day]:''} : {}; delete v.day; }
+    if(v && !v.days) v.days = {};
+    if(v && v.days) for(const k of Object.keys(v.days)) v.days[k] = ''; // drop AM/PM/FNQ slots
+  }
+  if(rev < 1){
+    /* one-time fix for pre-rev data: local runs override old cross-dock-only days.
+       Gated on rev so user edits in Settings are never overwritten on later loads. */
+    if(storeMap['8027']) storeMap['8027'].days = {Mon:''};
+    if(storeMap['8176']) storeMap['8176'].days = {Fri:''};
+    if(storeMap['8079']) storeMap['8079'].days = {Fri:''};
+  }
+  /* re-key catalog to canonical species keys (also merges PBR-suffix duplicates) */
+  {
+    const newCat = {};
+    for(const [k,v] of Object.entries(catalog)){
+      const key = canonKey(v.name||k, v.size);
+      newCat[key] = Object.assign({}, newCat[key]||{}, v, {name: prettyName(v.name||k)});
+    }
+    catalog = newCat;
+  }
+  for(const o of orders){
+    if(o.store && !o.store_name){ o.store_name = o.store; delete o.store; }
+    if(!o.store_no) o.store_no = first4(o.po_number);
+    if(o.tag !== undefined){ o.allocation = /alloc/i.test(o.tag||'') || isAllocationPo(o.po_number); delete o.tag; }
+    if(o.allocation === undefined) o.allocation = isAllocationPo(o.po_number);
+    if(!o.delivery_date) o.delivery_date = '';
+  }
+}
 async function restore(){
   try{
     let a = null, b = null;
@@ -636,41 +697,7 @@ async function restore(){
     try{ b = localStorage.getItem('traytally'); }catch(e){}
     /* prefer whichever actually holds data (the larger payload wins a tie) */
     const raw = (a && b) ? (a.length >= b.length ? a : b) : (a || b);
-    if(raw){
-      const d = JSON.parse(raw);
-      if(Array.isArray(d.orders)) orders = d.orders;
-      if(d.trayRules) trayRules = d.trayRules;
-      if(d.storeMap) storeMap = d.storeMap;
-      if(d.catalog) catalog = d.catalog;
-      if(d.collected) collected = d.collected;
-      for(const k of Object.keys(collected)) if(collected[k]===true) collected[k] = -1;
-      /* migrate older shapes */
-      for(const v of Object.values(storeMap)){
-        if(v && v.day !== undefined){ v.days = v.day ? {[v.day]:''} : {}; delete v.day; }
-        if(v && !v.days) v.days = {};
-        if(v && v.days) for(const k of Object.keys(v.days)) v.days[k] = ''; // drop AM/PM/FNQ slots
-      }
-      /* local runs override old cross-dock-only days */
-      if(storeMap['8027']) storeMap['8027'].days = {Mon:''};
-      if(storeMap['8176']) storeMap['8176'].days = {Fri:''};
-      if(storeMap['8079']) storeMap['8079'].days = {Fri:''};
-      /* re-key catalog to canonical species keys */
-      {
-        const newCat = {};
-        for(const [k,v] of Object.entries(catalog)){
-          const key = canonKey(v.name||k, v.size);
-          newCat[key] = Object.assign({}, newCat[key]||{}, v, {name: prettyName(v.name||k)});
-        }
-        catalog = newCat;
-      }
-      for(const o of orders){
-        if(o.store && !o.store_name){ o.store_name = o.store; delete o.store; }
-        if(!o.store_no) o.store_no = first4(o.po_number);
-        if(o.tag !== undefined){ o.allocation = /alloc/i.test(o.tag||'') || isAllocationPo(o.po_number); delete o.tag; }
-        if(o.allocation === undefined) o.allocation = isAllocationPo(o.po_number);
-        if(!o.delivery_date) o.delivery_date = '';
-      }
-    }
+    if(raw) applyLoadedData(JSON.parse(raw));
   }catch(e){}
   seedStores();
   renderAllStatic();
@@ -888,7 +915,9 @@ function normTokens(desc){
   let s = String(desc||'').toUpperCase().replace(/[+\-_/,]+/g,' ').replace(/\s+/g,' ').trim();
   let size = null;
   s = s.replace(/(\d{2,3})\s*MM\b/, (m,d)=>{ size = Number(d); return ' '; });
-  const words = s.split(' ').filter(w=>w && w!=='PLANT' && w!=='MM');
+  /* PBR (Plant Breeders' Rights) is a legal marker, not part of the plant's identity —
+     "LOMANDRA SHARA PBR" and "LOMANDRA SHARA" are the same species */
+  const words = s.split(' ').filter(w=>w && w!=='PLANT' && w!=='MM' && w!=='PBR');
   return {words, size};
 }
 function prettyName(desc){
@@ -936,6 +965,7 @@ function loadReview(){
   const po = meta.po_number||'';
   const no = first4(po);
   document.getElementById('rvPo').value = po;
+  poDupWarn();
   document.getElementById('rvStoreNo').value = no;
   /* prefer known name; else extracted text minus any digits-only value */
   let name = storeMap[no]?.name || '';
@@ -959,7 +989,20 @@ function poChanged(){
   const po = document.getElementById('rvPo').value.trim();
   document.getElementById('rvStoreNo').value = first4(po);
   document.getElementById('rvAlloc').checked = isAllocationPo(po);
+  poDupWarn();
   storeNoChanged();
+}
+function dupOrderOf(po){
+  po = String(po||'').trim();
+  return po ? orders.find(o=>o.po_number===po) : null;
+}
+function poDupWarn(){
+  const w = document.getElementById('rvPoWarn'); if(!w) return;
+  const dup = dupOrderOf(document.getElementById('rvPo').value);
+  w.textContent = dup
+    ? `⚠ This PO is already saved (${storeNameOf(dup)}${dup.delivery_date?' · '+fmtNice(dup.delivery_date):''}) — saving again will create a duplicate`
+    : '';
+  w.style.display = dup ? 'block' : 'none';
 }
 function storeNoChanged(){
   const no = document.getElementById('rvStoreNo').value.trim();
@@ -1208,14 +1251,6 @@ function reallyDeleteOrder(id){
   persist(); renderOrders(); renderWeekSegs(); renderAggregate();
   toast(before>orders.length ? 'Order deleted' : 'Order not found — try reloading', before<=orders.length);
 }
-function deleteOrder(id, btn){
-  armThenRun(btn, ()=>{
-    const before = orders.length;
-    orders = orders.filter(o=>o.id!==id);
-    persist(); renderOrders(); renderWeekSegs(); renderAggregate();
-    toast(before>orders.length ? 'Order deleted' : 'Order not found — try reloading', before<=orders.length);
-  });
-}
 let editItems = [];
 function openOrderEdit(id){
   const o = orders.find(o=>o.id===id); if(!o) return;
@@ -1302,7 +1337,6 @@ function saveOrderEdit(id){
 }
 
 /* ================= day plan (calendar) ================= */
-function renderDateSeg(){ renderWeekSegs(); }
 function setPlanDay(d, btn){
   planDay = d;
   renderWeekSegs(); renderAggregate();
@@ -1316,7 +1350,6 @@ function matchesScope(o){
 }
 function inScope(o){ return o.included && matchesScope(o); }
 function scopeOrders(){ return orders.filter(inScope); }
-function renderPicker(){ /* merged into the Orders delivery schedule */ }
 function toggleOrder(id,val){
   const o = orders.find(o=>o.id===id);
   if(o) o.included = val;
@@ -1397,11 +1430,20 @@ function renderAggregate(){
 
   renderSpeciesRequired(spBox);
 }
-function getCollected(){ return collected; }
-function toggleCollected(key, val, qty){
-  /* store qty at tick time — if a later PO raises the qty, the tick auto-clears */
-  if(val) collected[key] = qty; else delete collected[key];
+function wKey(k){
+  /* collected ticks are scoped per week — a tick from a past week must never
+     mark the same species collected in a new week's pick list */
+  return 'w'+(planWeek || weekStartOf(fmtISO(new Date())))+'|'+k;
+}
+function collectedQtyFor(k){ return Math.max(0, Number(collected[wKey(k)])||0); }
+function toggleCollected(key, val, qty, revertTo){
+  /* store qty at tick time — if a later PO raises the qty, the tick auto-clears.
+     revertTo: qty to fall back to when unticking a remainder row (efficient pull). */
+  if(val) collected[key] = qty;
+  else if(revertTo > 0) collected[key] = revertTo;
+  else delete collected[key];
   persist();
+  if(pickMode==='eff'){ renderAggregate(); return; } // regroup rows around the new tick state
   const tr = event.target.closest('tr');
   if(tr) tr.classList.toggle('row-done', val);
 }
@@ -1430,7 +1472,7 @@ function renderSpeciesRequired(spBox){
     for(const [e,i] of bySize[s]){
       const per = perForKey(e.key, e.size);
       const packOf = q => per ? `${Math.floor(q/per)}T${q%per?'+'+(q%per):''}` : `${q} pots`;
-      const col = Math.max(0, Number(collected[e.key])||0);
+      const col = collectedQtyFor(e.key);
       const done = e.qty>0 && col>=e.qty;
       const rem = Math.max(0, e.qty-col);
       const partial = !done && col>0;
@@ -1439,7 +1481,7 @@ function renderSpeciesRequired(spBox){
         : `<b>${packOf(rem)}</b>${partial?` <span class="muted">to go · ${col} done</span>`:''}`;
       const loc = catalog[e.key]?.location || '';
       rows += `<tr class="${done?'row-done':''}${partial?' row-partial':''}">
-        <td><input type="checkbox" class="collect-box" ${done?'checked':''} onclick="event.stopPropagation();toggleCollected('${e.key.replace(/'/g,"\\'")}',this.checked,${e.qty})"></td>
+        <td><input type="checkbox" class="collect-box" ${done?'checked':''} onclick="event.stopPropagation();toggleCollected('${escJs(wKey(e.key))}',this.checked,${e.qty})"></td>
         <td class="clickable" onclick="openSpecies(${i})">${esc(e.desc)}${partial?' <span class="pill warn">partly collected</span>':''}</td>
         <td style="text-align:right">${e.qty}</td><td>${packCell}</td>
         <td style="text-align:right">${e.unit!=null?e.unit.toFixed(2):'—'}</td>
@@ -1455,13 +1497,13 @@ function storeItemRows(o){
   const items = activeItems(o).slice().sort((a,b)=>((a.size_mm||999)-(b.size_mm||999)) || a.description.localeCompare(b.description));
   return items.map(it=>{
     const key = canonKey(it.description, it.size_mm);
-    const ck = 'o'+o.id+'|'+key;
+    const ck = wKey('o'+o.id+'|'+key);
     const per = perForItem(it);
     const pack = per ? `${Math.floor(it.qty/per)}T${it.qty%per?'+'+(it.qty%per):''}` : `${it.qty} pots`;
     const done = Number(collected[ck])===it.qty && it.qty>0;
     const loc = catalog[key]?.location || '';
     return `<tr class="${done?'row-done':''}">
-      <td><input type="checkbox" class="collect-box" ${done?'checked':''} onclick="event.stopPropagation();toggleCollected('${ck.replace(/'/g,"\\'")}',this.checked,${it.qty})"></td>
+      <td><input type="checkbox" class="collect-box" ${done?'checked':''} onclick="event.stopPropagation();toggleCollected('${escJs(ck)}',this.checked,${it.qty})"></td>
       <td>${esc(prettyName(it.description))}</td>
       <td style="text-align:right">${it.qty}</td><td><b>${pack}</b></td>
       <td style="text-align:right">${it.unit_price!=null?it.unit_price.toFixed(2):'—'}</td>
@@ -1470,28 +1512,62 @@ function storeItemRows(o){
   }).join('');
 }
 function buildEfficientSections(){
-  /* walk stores in delivery order; a species appears once, at the FIRST store
-     that needs it, with quantities from all later stores combined */
+  /* Walk stores in delivery order; a species appears once, at the FIRST store that
+     needs it, with quantities from later stores combined. If part of the total was
+     already ticked off earlier in the pull, that ticked portion stays (done) at its
+     store and only the extra quantity appears — under the first PO that added it. */
   const ordersList = scheduleSorted(scopeOrders());
-  const seen = new Set();
-  const sections = [];
+  const bySpecies = new Map();  // key -> {key, desc, size, unit, entries:[{o, q}] in pull order}
   for(const o of ordersList){
     const items = activeItems(o).slice().sort((a,b)=>((a.size_mm||999)-(b.size_mm||999)) || a.description.localeCompare(b.description));
-    const rows = [];
     for(const it of items){
       const key = canonKey(it.description, it.size_mm);
-      if(seen.has(key)) continue;
-      seen.add(key);
-      let total = 0; const split = [];
-      for(const o2 of ordersList){
-        const q = activeItems(o2).filter(x=>canonKey(x.description,x.size_mm)===key)
-          .reduce((s,x)=>s+x.qty,0);
-        if(q){ total += q; split.push(`${displayName(o2)} ${q}`); }
+      let sp = bySpecies.get(key);
+      if(!sp){
+        sp = {key, desc:prettyName(it.description), size:it.size_mm??guessSize(it.description), unit:it.unit_price, entries:[]};
+        bySpecies.set(key, sp);
       }
-      rows.push({key, desc:prettyName(it.description), size:it.size_mm??guessSize(it.description),
-        total, split, unit:it.unit_price});
+      if(sp.unit==null && it.unit_price!=null) sp.unit = it.unit_price;
+      const last = sp.entries[sp.entries.length-1];
+      if(last && last.o.id===o.id) last.q += it.qty;
+      else sp.entries.push({o, q:it.qty});
     }
-    if(rows.length) sections.push({o, rows});
+  }
+  const secs = new Map();  // order id -> rows
+  const addRow = (o, row) => {
+    if(!secs.has(o.id)) secs.set(o.id, []);
+    secs.get(o.id).push(row);
+  };
+  for(const sp of bySpecies.values()){
+    const total = sp.entries.reduce((s,e)=>s+e.q, 0);
+    if(total<=0) continue;
+    const row = (qty, entries, done, tickTo, revertTo) => ({
+      key:sp.key, desc:sp.desc, size:sp.size, unit:sp.unit, qty, done, tickTo, revertTo,
+      split: entries.map(e=>`${displayName(e.o)} ${e.q}`)
+    });
+    const col = Math.min(collectedQtyFor(sp.key), total);
+    if(col<=0){
+      addRow(sp.entries[0].o, row(total, sp.entries, false, total, 0));
+    }else if(col>=total){
+      addRow(sp.entries[0].o, row(total, sp.entries, true, total, 0));
+    }else{
+      /* the collected portion stays put; the rest appears under the first PO
+         beyond what was ticked (usually the one just added) */
+      let cum = 0; const covered = [], rest = [];
+      for(const e of sp.entries){
+        if(cum >= col) rest.push(e);
+        else if(cum + e.q <= col) covered.push(e);
+        else { covered.push({o:e.o, q:col-cum}); rest.push({o:e.o, q:e.q-(col-cum)}); }
+        cum += e.q;
+      }
+      addRow(covered[0].o, row(col, covered, true, total, 0));
+      addRow(rest[0].o, row(total-col, rest, false, total, col));
+    }
+  }
+  const sections = [];
+  for(const o of ordersList){
+    const rows = secs.get(o.id);
+    if(rows && rows.length) sections.push({o, rows});
   }
   return sections;
 }
@@ -1504,17 +1580,11 @@ function renderPickEfficient(spBox){
     for(const r of rs){
       const per = perForKey(r.key, r.size);
       const packOf = q => per ? `${Math.floor(q/per)}T${q%per?'+'+(q%per):''}` : `${q} pots`;
-      const col = Math.max(0, Number(collected[r.key])||0);
-      const done = r.total>0 && col>=r.total;
-      const rem = Math.max(0, r.total-col);
-      const partial = !done && col>0;
-      const packCell = done ? `<b>${packOf(r.total)}</b>`
-        : `<b>${packOf(rem)}</b>${partial?` <span class="muted">to go · ${col} done</span>`:''}`;
       const loc = catalog[r.key]?.location || '';
-      rows += `<tr class="${done?'row-done':''}${partial?' row-partial':''}">
-        <td><input type="checkbox" class="collect-box" ${done?'checked':''} onclick="event.stopPropagation();toggleCollected('${r.key.replace(/'/g,"\\'")}',this.checked,${r.total})"></td>
+      rows += `<tr class="${r.done?'row-done':''}">
+        <td><input type="checkbox" class="collect-box" ${r.done?'checked':''} onclick="event.stopPropagation();toggleCollected('${escJs(wKey(r.key))}',this.checked,${r.tickTo},${r.revertTo})"></td>
         <td>${esc(r.desc)}${r.split.length>1?`<div class="muted" style="font-size:.74rem">${esc(r.split.join(' · '))}</div>`:''}</td>
-        <td style="text-align:right">${r.total}</td><td>${packCell}</td>
+        <td style="text-align:right">${r.qty}</td><td><b>${packOf(r.qty)}</b></td>
         <td style="text-align:right">${r.unit!=null?r.unit.toFixed(2):'—'}</td>
         <td>${esc(loc)||'<span class="muted">—</span>'}</td>
       </tr>`;
@@ -1696,13 +1766,10 @@ function printPickList(){
         count++;
         const per = perForKey(r.key, r.size);
         const packOf = q => per ? `${Math.floor(q/per)}T${q%per?'+'+(q%per):''}` : `${q} pots`;
-        const col = Math.max(0, Number(collected[r.key])||0);
-        const done = r.total>0 && col>=r.total;
-        const rem = Math.max(0, r.total-col);
-        body += `<tr><td style="width:24pt;text-align:center">${done?'☑':'☐'}</td>
+        body += `<tr><td style="width:24pt;text-align:center">${r.done?'☑':'☐'}</td>
           <td>${esc(r.desc)}${r.split.length>1?`<br><span style="color:#555;font-size:8pt">${esc(r.split.join(' · '))}</span>`:''}</td>
-          <td style="text-align:right">${r.total}</td>
-          <td><b>${packOf(done?r.total:rem)}</b>${(!done&&col)?` <span style="color:#666">(${col} done)</span>`:''}</td>
+          <td style="text-align:right">${r.qty}</td>
+          <td><b>${packOf(r.qty)}</b></td>
           <td style="text-align:right">${r.unit!=null?r.unit.toFixed(2):''}</td>
           <td>${esc(catalog[r.key]?.location||'')}</td></tr>`;
       }
@@ -1718,7 +1785,7 @@ function printPickList(){
       for(const it of items){
         count++;
         const key = canonKey(it.description, it.size_mm);
-        const ck = 'o'+o.id+'|'+key;
+        const ck = wKey('o'+o.id+'|'+key);
         const per = perForItem(it);
         const pack = per ? `${Math.floor(it.qty/per)}T${it.qty%per?'+'+(it.qty%per):''}` : `${it.qty} pots`;
         const done = Number(collected[ck])===it.qty && it.qty>0;
@@ -1741,7 +1808,7 @@ function printPickList(){
       for(const e of bySize[s]){
         const per = perForKey(e.key, e.size);
         const packOf = q => per ? `${Math.floor(q/per)}T${q%per?'+'+(q%per):''}` : `${q} pots`;
-        const col = Math.max(0, Number(collected[e.key])||0);
+        const col = collectedQtyFor(e.key);
         const done = e.qty>0 && col>=e.qty;
         const rem = Math.max(0, e.qty-col);
         body += `<tr><td style="width:24pt;text-align:center">${done?'☑':'☐'}</td>
@@ -2114,7 +2181,7 @@ function clearApiKey(){
 try{ document.getElementById('apiKeyBox').value = localStorage.getItem('traytally_apikey')||''; }catch(e){}
 
 function saveBackupFile(){
-  const payload = JSON.stringify({orders, trayRules, storeMap, catalog, collected}, null, 1);
+  const payload = JSON.stringify({rev: DATA_REV, orders, trayRules, storeMap, catalog, collected}, null, 1);
   const blob = new Blob([payload], {type:'application/json'});
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -2129,12 +2196,7 @@ async function loadBackupFile(files){
   if(!f) return;
   try{
     const text = await f.text();
-    const d = JSON.parse(text);
-    if(Array.isArray(d.orders)) orders = d.orders;
-    if(d.trayRules) trayRules = d.trayRules;
-    if(d.storeMap) storeMap = d.storeMap;
-    if(d.catalog) catalog = d.catalog;
-    if(d.collected) collected = d.collected;
+    applyLoadedData(JSON.parse(text));
     await persist(); renderAllStatic();
     st.className='status'; st.textContent=`Restored ${orders.length} order(s) from ${f.name}.`;
     toast('Backup restored');
@@ -2145,17 +2207,12 @@ async function loadBackupFile(files){
 
 /* ================= backup ================= */
 function dumpBackup(){
-  document.getElementById('backupBox').value = JSON.stringify({orders, trayRules, storeMap, catalog, collected});
+  document.getElementById('backupBox').value = JSON.stringify({rev: DATA_REV, orders, trayRules, storeMap, catalog, collected});
 }
 function loadBackup(){
   const st = document.getElementById('backupStatus');
   try{
-    const d = JSON.parse(document.getElementById('backupBox').value);
-    if(Array.isArray(d.orders)) orders = d.orders;
-    if(d.trayRules) trayRules = d.trayRules;
-    if(d.storeMap) storeMap = d.storeMap;
-    if(d.catalog) catalog = d.catalog;
-    if(d.collected) collected = d.collected;
+    applyLoadedData(JSON.parse(document.getElementById('backupBox').value));
     persist(); renderAllStatic();
     st.className='status'; st.textContent='Backup loaded.';
   }catch(e){ st.className='status err'; st.textContent='Invalid JSON: '+e.message; }
@@ -2169,7 +2226,12 @@ function clearAll(btn){
 }
 
 /* ================= util ================= */
-function esc(s){ return String(s??'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function esc(s){ return String(s??'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function escJs(s){
+  /* for strings inside onclick="fn('…')" attributes: JS-escape first (\ and '),
+     then HTML-escape — descriptions come from extracted POs and can hold quotes */
+  return esc(String(s??'').replace(/\\/g,'\\\\').replace(/'/g,"\\'"));
+}
 
 restore();
 </script>
